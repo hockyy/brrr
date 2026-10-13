@@ -19,3 +19,13 @@ compile_commands.json
 
 # OS
 .DS_Store
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz

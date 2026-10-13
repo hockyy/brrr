@@ -1,0 +1,33 @@
+\section{Introduction}
+\label{sec:intro}
+
+Compiler pipelines are increasingly built and operated by automated agents, yet the
+frameworks they must extend were designed for humans editing C++ and waiting for
+rebuilds. Adding a pass, an operation definition, a verifier, or an invariant to an
+\mlir{}-based stack today means editing TableGen and C++ sources, rebuilding the tool,
+and restarting the process. That authoring loop --- not the IR data structure --- is
+the bottleneck.
+
+Our thesis is that the IR \emph{core} is not the right place to compete: \mlir{} has
+won the core, and systems that try to replace it lose the ecosystem while chasing a
+moving target. What is missing around the core are (i) declarative extension tiers
+that an agent can author as data, (ii) a control plane that discovers, validates, and
+loads those extensions at runtime, and (iii) first-class invariants that make
+agent-authored transformations trustworthy.
+
+\textbf{Contributions (draft).}
+\begin{itemize}
+  \item A tiered extension model for agent-authored compiler extensions --- from
+        pipeline manifests and interpreted transformations up to runtime operation
+        definitions and compiled plugins --- with precise rebuild boundaries.
+        {\color{red}\textbf{TODO}}
+  \item A runtime control plane: a manifest registry, plugin loader, and structured
+        (machine-readable) diagnostics.
+        {\color{red}\textbf{TODO}}
+  \item Invariants as data: per-stage contracts checked at runtime.
+        {\color{red}\textbf{TODO:} decide SMT-checked vs.\ translation-validation depth.}
+  \item An evaluation protocol for \emph{agent operability}: task success, time and
+        cost to first successful extension, error recovery, versus a vanilla
+        out-of-tree \mlir{} workflow.
+        {\color{red}\textbf{TODO:} define tasks, baselines, metrics.}
+\end{itemize}

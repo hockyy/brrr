@@ -1,0 +1,52 @@
+% BridgeIR — paper draft.
+% Convention: paper prose lives in docs/ (this file + sections/).
+% Working notes, decisions, scratch material live in docs/scratch/.
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{ragged2e}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{hyperref}
+
+\newcommand{\mlir}{MLIR}
+
+\title{BridgeIR: An Agent-Operated, Runtime-Extensible Multi-Backend IR Stack}
+\author{Hocky Yudhiono \\ \small (draft --- authors TBD)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Draft. BridgeIR is a multi-backend intermediate-representation stack whose extension
+surface --- pipelines, pass definitions, verifiers, and invariants --- is expressed as
+data that an automated agent can compose and load at runtime. We adopt \mlir{} as the
+IR substrate and contribute the layers it lacks: a tiered extension model with precise
+rebuild boundaries, a runtime control plane, and first-class invariants that make
+agent-authored transformations trustworthy.
+{\color{red}\textbf{TODO:}} sharpen thesis, state contributions, results.
+\end{abstract}
+
+\input{sections/01-introduction}
+\input{sections/02-positioning}
+
+% Planned sections (write next):
+% \input{sections/03-background}
+% \input{sections/04-design}
+% \input{sections/05-implementation}
+% \input{sections/06-evaluation}
+% \input{sections/07-related-work}
+% \input{sections/08-discussion}
+% \input{sections/09-conclusion}
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\end{document}

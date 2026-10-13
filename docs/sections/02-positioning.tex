@@ -1,0 +1,76 @@
+\section{Positioning: Where \mlir{} Ends}
+\label{sec:positioning}
+
+We frame the design space as a set of axes for \mlir{}~\cite{lattner2021mlir}. For
+each axis we ask what is available today and where systems that go \emph{beyond} it
+live. ``Bigger'' here does not mean a single system that dominates \mlir{} --- no such
+system exists today --- but rather the research or engineering direction that pushes
+that particular axis past what \mlir{} offers. Table~\ref{tab:landscape} states the
+comparison.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.6cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X@{}}
+  \toprule
+  \textbf{Axis} & \textbf{\mlir{} today} & \textbf{Where ``bigger'' lives} \\
+  \midrule
+  Multi-level structure &
+  Top form: a metalanguage; multi-level IRs are cheap &
+  --- (no rival supersedes it) \\
+  Declarative definitions (ops/types/attrs) &
+  Top form: ODS/TableGen generates builders, accessors, verifiers &
+  --- \\
+  Interpreted transformations &
+  Young: PDL patterns and transform-dialect scripts &
+  E-graph rewriting: egg~\cite{willsey2021egg},
+  egglog~\cite{zhang2023better}; tensor superoptimization:
+  TASO~\cite{jia2019taso} \\
+  Rewrite search and scheduling &
+  Greedy, order-sensitive; fixpoints via ad-hoc pass orders &
+  Equality saturation; relational e-matching~\cite{zhang2022relational};
+  rule inference~\cite{nandi2021ruler} \\
+  Per-compilation specialization &
+  Static pipelines; passes fixed at build time; schedules left to backends &
+  Autotuned schedules (TVM~\cite{chen2018tvm}, Triton~\cite{tillet2019triton});
+  peephole synthesis (STOKE~\cite{schkufza2013stoke}); generative compilation
+  (SPIRAL~\cite{puschel2005spiral}); staged specialization
+  (Futamura~\cite{futamura1971partial}) \\
+  Semantics and guarantees &
+  Local per-op C++ verifiers; no formal semantics &
+  Translation validation (Alive2)~\cite{lopes2021alive2}; mechanized semantics
+  (Vellvm)~\cite{zhao2012vellvm}; SMT-backed contracts \\
+  Incrementality &
+  Whole-pass recomputation &
+  Demand-driven compilation: Adapton~\cite{hammer2014adapton},
+  Salsa~\cite{salsa} \\
+  Runtime extensibility &
+  Second-class: \texttt{ExtensibleDialect} with C++ verify callbacks;
+  \texttt{.so} plugins with exact-ABI requirements &
+  Data-first extension registries; sandboxed plugin hosts (WASM) \\
+  Agent operability &
+  Weak: extension means editing \texttt{.td}/C++ and rebuilding &
+  Plan $\rightarrow$ build $\rightarrow$ load loops; machine-readable
+  pass/dialect descriptions; structured diagnostics \\
+  Stability and interchange &
+  No core stability; dialect-level fixes (StableHLO)~\cite{stablehlo} &
+  Versioned dialects with serialization discipline \\
+  Schedule and hardware semantics &
+  Partial: affine, linalg, CIRCT &
+  Schedule-first IRs: Halide~\cite{ragankelley2013halide},
+  TVM TensorIR~\cite{zheng2023tensorir}, ISL schedule trees \\
+  \bottomrule
+  \end{tabularx}
+  \caption{Axis-by-axis comparison. ``Bigger'' names the direction that pushes an axis
+  past \mlir{}, not a single competing system.}
+  \label{tab:landscape}
+\end{table}
+
+Reading the table: the first two rows are the foundation we inherit unchanged. The
+middle rows constitute the design space BridgeIR occupies --- interpreted
+transformations, trustworthy rewriting, per-compilation specialization, invariants,
+incrementality, runtime extensibility, and agent operability. The last rows we adopt
+as discipline (versioned dialects, stable serialization) and per-backend work
+(schedule and hardware semantics).
+{\color{red}\textbf{TODO:} add a per-axis ``BridgeIR stance'' once the design section
+stabilizes.}
