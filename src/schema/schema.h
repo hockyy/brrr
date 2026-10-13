@@ -26,6 +26,14 @@ struct Kind {
   bool operands_none = false;
   bool operands_variadic = false;
   std::vector<std::string> operands;
+  // Port types, parallel to `operands` ("" or "any" = unchecked):
+  //   value -> must reference a value-producing node
+  //   block -> must reference a node with trait `block`
+  //   edge  -> must reference a node with trait `edge`
+  std::vector<std::string> operand_types;
+  // >0: operands are a tuple of this width, repeated (e.g. phi's `(value, block)*`).
+  // This makes grouping a *declared* fact the checker proves generically.
+  size_t operand_tuple_width = 0;
 
   // Results: `value` (default) or `none` (terminator; may not be used as operand).
   bool results_specified = false;

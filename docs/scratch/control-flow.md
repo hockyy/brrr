@@ -56,6 +56,30 @@ Complete, lowering-faithful, and already round-trip-tested:
 `examples/loop_cfg.br` (canonical form) and `examples/dot_llvm.br` (a real
 `clang -O1` loop mapped nearly one-to-one).
 
+## Simple loop form (structured — implemented)
+
+For authored IR, the CFG form is more ceremony than needed. The same mechanism
+(scope + block arguments) yields a compact loop kind:
+
+```
+n5 sum = loop zero n_val {        # operands: initial carried values
+  n6 acc = param idx=0            # carried values are the scope's parameters
+  n7 i = param idx=1
+  fact 0 <= i                     # invariants still scope to the body
+  ...
+  n11 = loop.yield more new_acc next_i   # (continue-condition, next values)
+}
+n12 = func.return sum.0           # exit values are the loop's ports
+```
+
+Rules (relational checks): parameter count == initial operands; exactly one
+`loop.yield` in the body; yield operands == 1 + parameter count (condition first).
+`loop.N` ports are the exit values, in parameter order. Compared to the CFG form:
+one scope instead of blocks/edges/cbr, carried values are just parameters, and the
+exit is a port rather than another edge. The CFG form remains for lowering
+fidelity and imports (like phi); the structured form is what a human or agent
+should write first. See `examples/loop_simple.br` vs `examples/loop_cfg.br`.
+
 ## Block arguments vs phi nodes (both declared; block args are canonical)
 
 | | phi nodes (LLVM) | block arguments (MLIR, SIL, BridgeIR) |

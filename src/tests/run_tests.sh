@@ -311,4 +311,64 @@ else
   echo "ok: edge arity violation rejected"
 fi
 
+# Verification asymmetry: edge checking is local; phi needs derived predecessors.
+if "$BIN" check "$CASES/bad_edge_use.br" >/dev/null 2>&1; then
+  echo "FAIL: edge misuse accepted"
+  fail=1
+else
+  echo "ok: edge misuse rejected (terminators only, exactly once)"
+fi
+if "$BIN" check "$CASES/bad_phi.br" >/dev/null 2>&1; then
+  echo "FAIL: phi with non-predecessor accepted"
+  fail=1
+else
+  echo "ok: phi referencing a non-predecessor rejected"
+fi
+
+# Declaration level: the schema states phi's tuple structure; the checker proves it.
+if "$BIN" check "$CASES/bad_phi_odd.br" >/dev/null 2>&1; then
+  echo "FAIL: odd phi arity accepted"
+  fail=1
+else
+  echo "ok: phi tuple structure proven from the declaration (odd count rejected)"
+fi
+if "$BIN" schema 2>/dev/null | grep -Fq "(value, block)*"; then
+  echo "ok: schema declares phi's tuple structure"
+else
+  echo "FAIL: schema phi structure"
+  fail=1
+fi
+
+# Simple structured loops: scope + carried params + loop.yield, exits as ports.
+if "$BIN" check "$EXAMPLES/loop_simple.br" 2>/dev/null \
+     | grep -q "errors: 0, warnings: 0"; then
+  echo "ok: simple loop validates cleanly"
+else
+  echo "FAIL: simple loop validation"
+  fail=1
+fi
+simple_out="$("$BIN" print "$EXAMPLES/loop_simple.br" 2>/dev/null)"
+if echo "$simple_out" | grep -q "n5 sum = loop zero n_val {" &&
+   echo "$simple_out" | grep -q "n11 = loop.yield more new_acc next_i" &&
+   echo "$simple_out" | grep -q "n12 = func.return sum"; then
+  echo "ok: simple loop prints (carried params, yield, port exit)"
+else
+  echo "FAIL: simple loop printing"
+  echo "$simple_out" | head -14
+  fail=1
+fi
+if "$BIN" ask "$EXAMPLES/loop_simple.br" sum "i <= n_val" 2>/dev/null \
+     | grep -q -- "-> Yes"; then
+  echo "ok: simple loop invariants are scoped to the loop"
+else
+  echo "FAIL: simple loop invariants"
+  fail=1
+fi
+if "$BIN" check "$CASES/bad_loop.br" >/dev/null 2>&1; then
+  echo "FAIL: loop yield arity violation accepted"
+  fail=1
+else
+  echo "ok: loop yield arity violation rejected"
+fi
+
 exit $fail

@@ -278,6 +278,26 @@ into (backends, frontends) via adapters.
   interop; block args win on human/agent ergonomics; the difference is where the
   parallel copy lives. Added `select` (predication route) to the control module.
   Conversions are vocabulary-level (`phi → args` normalization pass is next).
+- 2026-10-13: verification argument added for edges over phi (`ssa-joins.md`):
+  phi needs a derived predecessor index (invalidated by every CFG edit), pair
+  parity/coverage, LLVM-style operand/successor order coupling, and dominance at
+  edge ends; block arguments reduce the join to a call-site check. Implemented in
+  the verifier: edge-use restriction (terminators only, exactly one), predecessor
+  derivation, phi pair/coverage checks; negative tests `bad_edge_use.br`,
+  `bad_phi.br`.
+- 2026-10-13: raised the declaration level (user: phi is "declared in a very low
+  level way that we cannot proof it"): schema ports are now typed (`target: block`,
+  `passed: value*`) and support **port groups** (`(value, block)*`). The generic
+  checker proves grouping and port kinds from the declaration and the hand-written
+  phi parity/block checks were deleted; only the relational residue (edge arity,
+  phi coverage) stays code — flagged as level-3 "constraints as data". Negative
+  test `bad_phi_odd.br`; `schema` output shows the tuple declaration.
+- 2026-10-13: simple structured loop added (user: "we just need a better way to
+  represent loops"): `loop` is a scope whose `param`s are the carried values,
+  `loop.yield (cond, next*)` terminates the body, `loop.N` ports are the exits.
+  Relational checks: params == initial operands, exactly one yield, yield arity ==
+  params+1. `loop_simple.br` (vs `loop_cfg.br`); negative `bad_loop.br`. Std/control
+  port declarations typed; schema printer renders types and `( ... )*` groups.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

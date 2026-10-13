@@ -1,0 +1,21 @@
+# Simple structured loop: the loop is a scope, carried values are its `param`s,
+# `loop.yield` supplies (condition, next carried values), and `loop.N` ports are
+# the exit values. Compare with the CFG form in loop_cfg.br.
+func @sum_to_n(n1) {
+  n2 n_val = param idx=0 type="i64"
+  n3 zero = arith.constant type="i64" value="0"
+  n4 neg_one = arith.constant type="i64" value="-1"
+
+  n5 sum = loop zero n_val {
+    n6 acc = param idx=0
+    n7 i = param idx=1
+    fact 0 <= i
+    fact i <= n_val
+    n8 next_i = arith.addi i neg_one
+    n9 new_acc = arith.addi acc i
+    n10 more = icmp next_i zero pred="gt"
+    n11 = loop.yield more new_acc next_i
+  }
+
+  n12 = func.return sum.0
+}

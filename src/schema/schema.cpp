@@ -194,16 +194,76 @@ bool parseSchema(const std::string& text, Registry* reg, std::string* err) {
       if (value == "none") {
         cur.operands_none = true;
       } else {
-        cur.operands = splitComma(value);
-        if (!cur.operands.empty() && !cur.operands.back().empty() &&
-            cur.operands.back().back() == '*') {
-          cur.operands_variadic = true;
-          cur.operands.back().pop_back();
-          if (cur.operands.back().empty()) cur.operands.pop_back();
+        // Slots: commas separate slots; a slot may be `name: type` (spaces around
+        // ':' allowed), or bare tokens (names or types) split on whitespace.
+        auto toSlots = [&](const std::string& spec,
+                           std::vector<std::string>* names,
+                           std::vector<std::string>* types) {
+          std::vector<std::string> pieces;
+          std::string curp;
+          for (const char ch : spec) {
+            if (ch == ',') {
+              pieces.push_back(trim(curp));
+              curp.clear();
+            } else {
+              curp += ch;
+            }
+          }
+          pieces.push_back(trim(curp));
+          for (const std::string& piece : pieces) {
+            if (piece.empty()) continue;
+            const size_t c2 = piece.find(':');
+            if (c2 != std::string::npos) {
+              names->push_back(trim(piece.substr(0, c2)));
+              types->push_back(trim(piece.substr(c2 + 1)));
+              continue;
+            }
+            std::string w;
+            for (size_t i = 0; i <= piece.size(); ++i) {
+              if (i == piece.size() || piece[i] == ' ' || piece[i] == '\t') {
+                if (!w.empty()) {
+                  std::string name = w;
+                  std::string type;
+                  if (w == "value" || w == "block" || w == "edge" ||
+                      w == "any") {
+                    type = w;
+                    name.clear();
+                  }
+                  names->push_back(name);
+                  types->push_back(type);
+                  w.clear();
+                }
+              } else {
+                w += piece[i];
+              }
+            }
+          }
+        };
+
+        if (value.front() == '(') {
+          // Port group: (slot, slot, ...)* — operands repeat as tuples.
+          if (value.back() != '*' || value.find(')') == std::string::npos) {
+            return fail("tuple operand spec must be ( ... )*");
+          }
+          const size_t rp = value.rfind(')');
+          toSlots(value.substr(1, rp - 1), &cur.operands, &cur.operand_types);
+          if (cur.operands.empty()) return fail("empty tuple operand spec");
+          cur.operand_tuple_width = cur.operands.size();
+        } else {
+          std::string spec = value;
+          if (!spec.empty() && spec.back() == '*') {
+            cur.operands_variadic = true;
+            spec.pop_back();
+          }
+          toSlots(spec, &cur.operands, &cur.operand_types);
         }
-        for (const std::string& o : cur.operands) {
-          if (o.empty()) return fail("empty operand name");
+        for (const std::string& type : cur.operand_types) {
+          if (!type.empty() && type != "value" && type != "block" &&
+              type != "edge" && type != "any") {
+            return fail("unknown port type '" + type + "'");
+          }
         }
+        if (cur.operands.empty()) return fail("empty operands spec");
       }
     } else if (key == "results") {
       cur.results_specified = true;
@@ -333,7 +393,7 @@ kind func.return {
 std::string stdSchemaText() {
   return R"SCHEMA(# std module: common operation vocabulary.
 kind unary {
-  operands: x
+  operands: x: value
   results: value
   traits: pure
 }
@@ -345,14 +405,14 @@ kind load {
 }
 
 kind reshape {
-  operands: source
+  operands: source: value
   results: value
   attrs: in:dims out:dims
   traits: pure
 }
 
 kind add {
-  operands: lhs, rhs
+  operands: lhs: value, rhs: value
   results: value
   traits: pure
 }
@@ -363,9 +423,11 @@ kind relu < unary {
 }
 
 std::string controlSchemaText() {
-  return R"SCHEMA(# control module: branches and loops (CFG form).
-# Blocks are scopes; `block` yields control, which branch ops consume.
-# `yield` is reserved for structured regions (future).
+  return R"SCHEMA(# control module: branches and loops.
+# CFG form: blocks are scopes; `edge` carries branch payloads.
+# Simple form: `loop` is a scope whose `param`s are the carried values and whose
+# single `loop.yield` supplies (condition, next carried values); the `loop.N`
+# result ports are the exit values, in parameter order.
 
 kind block {
   operands: none
@@ -374,29 +436,32 @@ kind block {
 }
 
 kind edge {
-  operands: target, passed*
+  operands: target: block, passed: value*
   results: value
   traits: edge
 }
 
 kind br {
-  operands: target
+  operands: target: any
   results: none
+  traits: terminator
 }
 
 kind cbr {
-  operands: cond, if_true, if_false
+  operands: cond: value, if_true: value, if_false: value
   results: none
+  traits: terminator
 }
 
 kind select {
-  operands: cond, if_true, if_false
+  operands: cond: value, if_true: value, if_false: value
   results: value
 }
 
 kind phi {
-  operands: value*
+  operands: (value, block)*
   results: value
+  traits: phi
 }
 
 kind yield {
@@ -404,8 +469,20 @@ kind yield {
   results: none
 }
 
+kind loop {
+  operands: init: value*
+  results: value
+  traits: loop
+}
+
+kind loop.yield {
+  operands: cond: value, next: value*
+  results: none
+  traits: loop.yield
+}
+
 kind icmp {
-  operands: lhs, rhs
+  operands: lhs: value, rhs: value
   results: value
 }
 
@@ -415,7 +492,7 @@ kind arith.constant {
 }
 
 kind arith.addi {
-  operands: lhs, rhs
+  operands: lhs: value, rhs: value
   results: value
 }
 )SCHEMA";

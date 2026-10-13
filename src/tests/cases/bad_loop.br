@@ -1,0 +1,10 @@
+# Loop structure violation: carried count and the yield must agree.
+# `sum` carries 1 value, so `loop.yield` needs condition + 1 = 2 operands.
+func @bad_loop(n1) {
+  n2 zero = arith.constant type="i64" value="0"
+  n3 sum = loop zero {
+    n4 acc = param idx=0
+    n5 = loop.yield zero
+  }
+  n6 = func.return sum.0
+}

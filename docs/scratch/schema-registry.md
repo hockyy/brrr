@@ -9,11 +9,22 @@ a **results policy**, and **typed attributes**, and every load validates them.
 ```
 # comments
 kind reshape {
-  operands: source            # positional & named: `none` | `a, b` | `tail*` (variadic)
-  results: value              # `value` (default) | `none` (terminator)
-  attrs: in:dims out:dims     # omitted => free | `none` | closed set of name:type
+  operands: source: value      # slots may be named and TYPED: value | block | edge | any
+  results: value               # `value` (default) | `none` (terminator)
+  attrs: in:dims out:dims      # omitted => free | `none` | closed set of name:type
+}
+kind phi {
+  operands: (value, block)*    # PORT GROUPS: a tuple repeated — structure the
+  results: value               # checker proves generically, not per-kind code
 }
 ```
+
+Port types make cross-node assumptions *declared* and generically checked:
+`target: block` means the checker verifies the referenced node is a block;
+`(value, block)*` means grouping and from-block typing are structural facts.
+Only genuinely relational properties (edge arity vs target parameters, phi
+coverage vs predecessors) remain verifier code — the documented next level is
+"constraints as data".
 
 Attribute types: `int`, `float`, `str`, `sym`, `expr` (one expression), `dims`
 (comma-separated expressions, e.g. shapes). `expr`/`dims` strings are parsed with

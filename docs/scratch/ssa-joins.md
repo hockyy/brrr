@@ -73,6 +73,49 @@ expressiveness.
 Conversions between the two main forms are standard: MLIR (block args) lowers to
 LLVM (phi); the reverse — phi → args — is a classic normalization.
 
+## Verification: the decisive argument for edges
+
+Phi's invariant exists *because of the representation*:
+
+1. **Predecessors are not stored.** They must be derived from terminators — a
+   global inverted index that every CFG edit invalidates.
+2. **Two-node mutual invariant.** Each `(value, from-block)` pair must correspond
+   to a real edge, so the phi and the terminator's successor set must agree.
+3. **Order coupling (LLVM).** Phi operand order tracks successor order; reordering
+   successors silently invalidates phis unless both sites are updated.
+4. **Dominance at edge ends.** The incoming value must dominate the *predecessor
+   block's terminator*, not the use — a whole-function analysis run with special
+   phi handling.
+5. **Fiddly coverage rules.** Unreachable predecessors, critical edges, and
+   self-loops all complicate pair coverage.
+
+Block arguments reduce the same question to a **call-site check**: arity, types,
+and the ordinary "operands dominate their use" rule. No derived index, no
+cross-node parity, no ordering coupling — the join verifies the way function calls
+verify.
+
+Implemented in `verify/check.cpp` to make the asymmetry concrete: edge arity and
+edge-use restrictions are purely local; the phi check needs `predecessors_of()`
+(derived from terminators and edge targets) plus pair-parity and coverage
+bookkeeping. Negative cases: `bad_edge.br`, `bad_edge_use.br`, `bad_phi.br`.
+
+### Declaration levels (how far can a property be *stated*?)
+
+| Level | Mechanism | Provable by |
+|---|---|---|
+| 0 | doc-comment conventions ("operands are pairs") | nobody |
+| 1 | traits + hand-written checks | code review |
+| 2 | typed ports and port groups (**now**) | the schema, generically |
+| 3 | declarative constraints over the IR (next) | one generic engine (+ a solver) |
+
+At level 2, `phi { operands: (value, block)* }` makes even grouping and
+from-block typing *structural facts the schema proves* — the hand-written parity
+and block checks were deleted. `edge { target: block, passed: value* }` proves the
+target typing. What remains in C++ is exactly the **relational residue**
+(cross-node: edge arity vs target parameters; phi coverage vs predecessors) — which
+is level 3's job: state them as constraints, check (or discharge) them with one
+engine instead of per-kind code.
+
 ## BridgeIR stance
 
 Both are declared kinds in the `control` module. Canonical form: block arguments

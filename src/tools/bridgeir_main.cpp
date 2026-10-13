@@ -239,8 +239,17 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < k.operands.size(); ++i) {
           if (i) ops += ", ";
           ops += k.operands[i];
+          if (i < k.operand_types.size() && !k.operand_types[i].empty() &&
+              k.operand_types[i] != "any") {
+            if (!k.operands[i].empty()) ops += ": ";
+            ops += k.operand_types[i];
+          }
         }
-        if (k.operands_variadic) ops += "*";
+        if (k.operand_tuple_width > 0) {
+          ops = "(" + ops + ")*";
+        } else if (k.operands_variadic) {
+          ops += "*";
+        }
         std::cout << "  operands: " << ops << "\n";
       }
       std::cout << "  results: " << (k.results_value ? "value" : "none")
