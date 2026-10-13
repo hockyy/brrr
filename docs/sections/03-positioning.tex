@@ -66,11 +66,12 @@ comparison.
   \label{tab:landscape}
 \end{table}
 
-Reading the table: the first two rows are the foundation we inherit unchanged. The
-middle rows constitute the design space BridgeIR occupies --- interpreted
-transformations, trustworthy rewriting, per-compilation specialization, invariants,
-incrementality, runtime extensibility, and agent operability. The last rows we adopt
-as discipline (versioned dialects, stable serialization) and per-backend work
-(schedule and hardware semantics).
-{\color{red}\textbf{TODO:} add a per-axis ``BridgeIR stance'' once the design section
-stabilizes.}
+Reading the table: the first two rows are MLIR's strongest ground --- the baseline for
+human-authored compiler engineering --- and under the own-core decision they become
+interop concerns rather than foundations. BridgeIR's claims live in the middle rows,
+where it builds agent-first replacements: stable identity instead of renumbering,
+runtime data-defined schemas instead of build-time ODS, transactional deltas with
+provenance instead of opaque passes. The last rows we adopt as discipline (versioned
+schemas, stable serialization) and per-backend work (schedule and hardware semantics).
+{\color{red}\textbf{TODO:} refresh the per-axis ``BridgeIR stance'' once the design
+section stabilizes.}

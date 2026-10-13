@@ -25,24 +25,27 @@
 \maketitle
 
 \begin{abstract}
-Draft. BridgeIR is a multi-backend intermediate-representation stack whose extension
-surface --- pipelines, pass definitions, verifiers, and invariants --- is expressed as
-data that an automated agent can compose and load at runtime. We adopt \mlir{} as the
-IR substrate and contribute the layers it lacks: a tiered extension model with precise
-rebuild boundaries, a runtime control plane, and first-class invariants that make
-agent-authored transformations trustworthy.
+Draft. BridgeIR is an intermediate representation and compiler framework designed for
+agent-driven compilation. Rather than operating agents on IRs built for human pass
+authors, we redesign the IR itself around agent affordances: stable node identity that
+survives transformations and serialization, definitions as runtime data, transactional
+deltas with provenance, and a canonical, token-lean text format. We ground the design
+in a survey of production and research IRs across language, tensor, hardware, and
+database compilers, which shows that expressiveness across IR forms is largely
+equivalent and that identity, data-defined definitions, and provenance are the
+unclaimed axes.
 {\color{red}\textbf{TODO:}} sharpen thesis, state contributions, results.
 \end{abstract}
 
 \input{sections/01-introduction}
-\input{sections/02-positioning}
+\input{sections/02-background}
+\input{sections/03-positioning}
+\input{sections/07-related-work}
 
 % Planned sections (write next):
-% \input{sections/03-background}
 % \input{sections/04-design}
 % \input{sections/05-implementation}
 % \input{sections/06-evaluation}
-% \input{sections/07-related-work}
 % \input{sections/08-discussion}
 % \input{sections/09-conclusion}
 

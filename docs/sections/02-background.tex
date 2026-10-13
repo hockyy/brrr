@@ -1,0 +1,82 @@
+\section{Background: The Design Space of Compiler IRs}
+\label{sec:background}
+
+Intermediate representations are the interface through which compiler components —
+frontends, transformations, verifiers, and backends — cooperate. We surveyed the IRs
+of production and research compilers across language, tensor, hardware, verification,
+and database domains. Two structural observations motivate this paper.
+
+\paragraph{Chains, not single IRs.} Every mature compiler we surveyed is a
+\emph{chain} of IRs, each tuned to a stage: GCC lowers GENERIC trees to three-address
+GIMPLE and then to register-transfer lists~\cite{merrill2003gimple}; GHC goes from
+typed Core through STG to Cmm~\cite{peytonjones1992stg}; Rust passes through HIR, MIR,
+and LLVM IR~\cite{mir}; Swift stages SIL before LLVM~\cite{swiftsil}; JavaScript
+engines carry bytecode plus two or more optimizing graph IRs. A framework for
+agent-driven compilation should therefore treat IR \emph{forms} as schemas and support
+chains natively, rather than betting on one representation.
+
+\paragraph{Forms are affordances, not expressiveness.} The classical forms are
+largely inter-translatable: CPS, ANF, and SSA are known to correspond
+\cite{kelsey1995ssa, appel1998ssa}, and sea-of-nodes IRs make scheduling implicit
+where CFG-based IRs make it explicit~\cite{click1995sea, wurthinger2017graal}.
+Expressiveness therefore does not discriminate among forms. What differs is what each
+form makes cheap or awkward — identity stability, definition mechanics, verification
+strength, and provenance (Table~\ref{tab:forms}) — precisely the properties that
+matter when the ``user'' of the compiler is an automated agent rather than a C++ pass
+author.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.5cm} >{\raggedright\arraybackslash}p{3.3cm} >{\raggedright\arraybackslash}p{2.5cm} >{\raggedright\arraybackslash}X@{}}
+  \toprule
+  \textbf{Form} & \textbf{Exemplars} & \textbf{Identity} & \textbf{Verification} \\
+  \midrule
+  Linear 3-address & GIMPLE~\cite{merrill2003gimple} & implicit indices & pass-local checks \\
+  CFG + SSA & LLVM~\cite{lattner2004llvm}, MIR~\cite{mir}, SIL~\cite{swiftsil} & renumbered on print & verifier functions \\
+  Sea of nodes & C2, Graal~\cite{click1995sea, wurthinger2017graal} & in-memory pointers & structural invariants \\
+  Functional, let-bound & GHC Core/STG~\cite{peytonjones1992stg}, Core Erlang~\cite{coreerlang} & binding names & type systems \\
+  Name-keyed graph & ONNX~\cite{onnx}, TF GraphDef & \textbf{stable names} & schema/shape checks \\
+  Loop + schedule & Halide~\cite{ragankelley2013halide}, TensorIR~\cite{zheng2023tensorir} & names & shape checks \\
+  Structured bytecode & wasm~\cite{haas2017wasm}, SPIR-V~\cite{spirvspec} & indices & load-time validation \\
+  E-graph & egg~\cite{willsey2021egg}, TASO~\cite{jia2019taso} & hash-consed classes & rule-based \\
+  \bottomrule
+  \end{tabularx}
+  \caption{IR forms and their affordances. Expressiveness is largely equivalent across
+  forms; identity stability, definition mechanics, verification, and provenance differ
+  — and those differences are what agents feel.}
+  \label{tab:forms}
+\end{table}
+
+\paragraph{Identity.} Optimizing IRs in every surveyed production compiler renumber
+their values on output: LLVM and MLIR print dense \texttt{\%0}, \texttt{\%1}, \dots
+indices, MIR and SIL numbering shifts across passes, and bytecode indices move with
+their tables. Only \emph{exchange} formats designed for serialization keep names —
+TensorFlow's GraphDef and ONNX reference values by persistent string
+identifiers~\cite{onnx} — and those formats carry no optimization infrastructure.
+Renumbering is costly for an agent: textual references do not survive a pass boundary,
+diffs are noisy, and cached observations about particular nodes are invalidated by
+unrelated edits.
+
+\paragraph{Definitions.} Operator definitions are overwhelmingly build-time artifacts:
+TableGen and ODS generate C++ classes for LLVM and MLIR, Swift uses \texttt{.def}
+files, and JVM bytecode semantics are fixed by specification~\cite{jvmspec}. Two
+systems deviate in opposite directions: ONNX defines operators as versioned data
+schemas with type constraints~\cite{onnx} but has no transformation engine, while TVM
+registers operators at compiler runtime~\cite{chen2018tvm} inside a schedule-driven
+compiler. No surveyed system combines data-defined definitions with first-class
+transformations and verification.
+
+\paragraph{Verification.} Strong verification precedents exist — the JVM bytecode
+verifier~\cite{jvmspec}, WebAssembly's load-time type validation~\cite{haas2017wasm},
+eBPF's static safety verifier~\cite{ebpf}, SPIR-V validation~\cite{spirvspec}, SIL's
+per-stage verification~\cite{swiftsil}, and nanopass's automatically generated
+per-stage verifiers~\cite{keep2013nanopass} — but all are static: they run at load
+time or build time, none per transformation, and none are transactional.
+
+\paragraph{Provenance.} Compiler IRs largely omit provenance; LLVM's optimization
+remarks attribute transformations to source lines only weakly. By contrast, database
+optimizers maintain a memo of equivalent expressions and remember which rewrite rules
+derived each expression~\cite{graefe1995cascades}; this is the closest existing
+analogue of the delta-and-journal model we adopt. Identity, data-defined definitions,
+and provenance are the axes on which BridgeIR positions itself.

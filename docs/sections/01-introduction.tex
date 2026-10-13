@@ -8,12 +8,13 @@ rebuilds. Adding a pass, an operation definition, a verifier, or an invariant to
 and restarting the process. That authoring loop --- not the IR data structure --- is
 the bottleneck.
 
-Our thesis is that the IR \emph{core} is not the right place to compete: \mlir{} has
-won the core, and systems that try to replace it lose the ecosystem while chasing a
-moving target. What is missing around the core are (i) declarative extension tiers
-that an agent can author as data, (ii) a control plane that discovers, validates, and
-loads those extensions at runtime, and (iii) first-class invariants that make
-agent-authored transformations trustworthy.
+Our thesis is that agent-driven compilation needs an IR designed for agents, not
+agents bolted onto an IR designed for human pass authors. MLIR and LLVM are excellent
+at what they target, but they make the opposite choices on the axes that matter here:
+definitions are build-time code, values are renumbered on every print, and
+transformations leave no provenance. We therefore design the IR itself around agent
+affordances --- stable identity, data-defined definitions, transactional deltas with
+provenance --- and keep interop with existing ecosystems as optional adapters.
 
 \textbf{Contributions (draft).}
 \begin{itemize}
