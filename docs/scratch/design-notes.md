@@ -105,15 +105,60 @@ minted per compilation. They compose: e.g. an S2 rewrite set enters via T2.)
 
 ## Environment facts (verified)
 
-- `~/pg/llvm-project` @ `85081add2d8b` (2026-09-04), LLVM 24.0.0git, assertions build
-  at `~/pg/llvm-project/build` (`mlir-opt` present). Pin candidate.
+- `~/pg/llvm-project` @ `85081add2d8b` (2026-09-04), LLVM 24.0.0git, at
+  `~/pg/llvm-project/build`. Config: Release+asserts, `LLVM_ENABLE_PROJECTS=mlir`,
+  `LLVM_TARGETS_TO_BUILD=Native`, `BUILD_SHARED_LIBS=OFF` (static `.a` libs),
+  `LLVM_ENABLE_RTTI=OFF`. Pin candidate.
 - `mlir-opt` supports: `--load-pass-plugin`, `--load-dialect-plugin`,
   `--mlir-print-ir-after[-all|-change|-failure]`, `--list-passes`,
-  `--transform-interpreter`, `--pass-pipeline-file`.
+  `--transform-interpreter`, `--pass-pipeline-file`, `--emit-bytecode(-version)`,
+  `--mlir-disable-threading`, reproducer flags. PDL + Transform dialects present.
 - `mlir/IR/ExtensibleDialect.h`: runtime op definitions with `setVerifyFn`; dynamic
   traits with `verifyTrait`/`verifyRegionTrait`; `DynamicOpDefinition` carries
   `VerifyInvariantsFn`/`VerifyRegionInvariantsFn`.
   → runtime defs + runtime verifiers from data/schemas are feasible today.
+
+## MLIR feasibility (verdicts, 2026-10-13)
+
+| Vision requirement | Verdict |
+|---|---|
+| Multi-backend lowering | Proven (Triton/IREE/CIRCT) |
+| Agent-composed pipelines (S1) | Native, zero rebuild |
+| Interpreted transforms (S2) | Native: transform dialect + PDL |
+| Runtime defs + verifiers (T3) | Feasible, second-class (no runtime ODS) |
+| Runtime passes (T4) | No interpretation: plugin + restart (compile .so/WASM) |
+| Structured feedback / provenance | Build it (print-ir hooks + diagnostics are raw material) |
+| SOTA compile speed | Engineering, not default |
+
+Hard edges: (1) passes are compiled, not interpreted; (2) dynamic definitions are
+second-class; (3) speed must be engineered. None require replacing MLIR; in-house
+patch rights cover the gaps.
+
+## MLIR cost model + mitigations (measured 2026-10-13)
+
+Measured on this box: build = **6.0 GB** (Release+asserts, `Native` targets, mlir-only);
+`mlir-opt --version` startup = **14 ms**; ccache + lld + ninja present;
+`BUILD_SHARED_LIBS=OFF` BUT `mlir-opt` exports **~175k MLIR dynamic symbols** → pass
+plugins resolve MLIR symbols at dlopen; **no shared-libs rebuild needed**. Plugin
+units must match flags (notably `-fno-rtti`, same C++ std) and must NOT link MLIR
+`.a`s themselves (duplicate registries — resolve from host instead).
+
+Three heavinesses, three answers:
+
+1. Build/setup (one-time): already paid here; consume via `MLIR_DIR` as a pinned SDK;
+   never rebuild MLIR per project. LLVM's configure is the slow part and runs once.
+2. Our-code compile (recurring, the real cost): template-heavy headers; mitigate with
+   ccache (present), lld (present), unity/PCH for our TUs, small plugin units, small core.
+3. Runtime compile speed (recurring): naive pipelines are slow (verify-each,
+   conversion, canned 100-pass pipelines). Mitigate per the S-ladder: planned
+   pipelines, boundary verification, bytecode + S0 cache, worker pools.
+
+Gate (falsifiable, week 1): plugin edit → rebuild → restart → run ≤ ~1 s. If missed,
+lean on T0–T3 (data tiers) + WASM; T4 stays cached/amortized.
+
+Decision: accept MLIR's cost; engineer the inner loop; measure the gate. Alternative
+(own core) = reimplement parser/verifier/diagnostics/rewrites/conversion/tooling and
+still pay C++ compile latency for compiled extensions.
 
 ## Rival IR "forms" (candidate related work)
 
@@ -141,7 +186,8 @@ shippable, and that is the paper story.
 - v0 self-specialization scope: S1–S3 per compile, S4 cached? (proposed)
 - Compile-latency budget + fallback policy per stage? (proposed: hard ceiling)
 - What counts as "runtime"? Restart-based reload acceptable? (proposed: yes.)
-- Plugin ABI for v0: internal .so vs stable C ABI vs WASM. (Proposed: .so first.)
+- Plugin ABI for v0: internal .so vs stable C ABI vs WASM. (Proposed: .so first;
+  measured viable — host exports MLIR symbols.)
 - Paper title, venue, timeline.
 
 ### Candidate titles
@@ -158,6 +204,9 @@ shippable, and that is the paper story.
   reuse-not-recode).
 - 2026-10-13: self-specializing compilation adopted as design direction; staging law
   S0–S4; provenance promoted from "candidate differentiator" to required layer.
+- 2026-10-13: MLIR cost audit on this box: build 6.0 GB, startup 14 ms, static libs
+  but ~175k symbols exported → plugin loop viable without shared-libs rebuild.
+  Adoption gate (week 1): plugin edit → rebuild → restart → run ≤ ~1 s.
 - Substrate: MLIR (C++ out-of-tree), pinned to the LLVM 24 checkout above (tentative;
   patchable in-house).
 - Agent runtime target: T0–T3 without rebuild; T4 via build service.
