@@ -24,15 +24,16 @@ compiler is never rewritten.
    most, a new dialect. Files touched in the core: zero.
 5. **Fast, on three clocks.** Time to extend, compile latency (agent loop latency is
    product latency), and generated-kernel performance.
-6. **Reuse before rewrite.** We own the architecture, control plane, and feedback;
-   proven substrate is borrowed behind loose interfaces, stays patchable in-house,
-   and remains swappable.
+6. **Own the core; borrow at the edges.** The IR, definitions registry, verifiers,
+   passes, and feedback are ours, built from scratch — small, fast, data-first, no
+   heavyweight dependencies. Codegen and other worlds (LLVM, NPU toolchains, MLIR
+   ecosystems) plug in at the edges as replaceable adapters.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `src/` | compiler sources (planned; C++/MLIR) |
+| `src/` | the BridgeIR core library (planned; C++20, no heavy deps) |
 | `docs/` | the paper (LaTeX — `docs/main.tex`) |
 | `docs/scratch/` | working notes, decisions, design log |
 
