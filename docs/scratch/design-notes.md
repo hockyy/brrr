@@ -406,6 +406,30 @@ into (backends, frontends) via adapters.
   extension = schema growth at link time, so module version/hash pinning and
   visibility matter (a document must not depend on fields it did not import), and
   declaring `scalar`/`type`/`kind`/`class` inside a document stays forbidden.
+- 2026-10-13: **decided (not yet implemented)** — refinement of class-shaped
+  types: *definition* may be **C++ code** (a registered implementation / plugin:
+  semantics, verifier, lowering, optional custom parse/print), while the *surface*
+  (members, syntax, traits, checks) stays data — either derived from the C++
+  registration or restated in the library module that binds it
+  (`impl: cpp@dynint`). Documents may **declare and initialize** class-typed
+  values (`d = DynamicInt { length: 64, unit: "t" }`) and may declare
+  *specializations* with bound members, but never behavior: a method/hook
+  declaration in a `.br` is an error. Rule of thumb — **define = C++ or a library
+  module; declare & initialize = document.** Pure-data classes (no `impl`) are
+  plain records; that is exactly what `type` is, so nothing is lost for the
+  no-C++ case.
+- 2026-10-13: **decided (not yet implemented)** — *exports are per-piece*. A class
+  registration exports its **shape** (members, base, syntax) and each semantic
+  hook separately — verifier, lowering, checks, custom parse/print, cost model,
+  conversions — every one a named, versioned unit. The shape declares which hooks
+  it *requires* (`requires: verify, lower`); module linking must resolve each to
+  exactly one registered implementation (version/hash pinned). A missing hook is a
+  **load error** ("type exports shape but no verifier; link `verify@v1` or mark it
+  `unchecked`"); duplicates conflict; resolution order is explicit. Unverifiable
+  use is only allowed as an explicit, provenance-visible opt-in (`unchecked`),
+  never a silent default — contrast MLIR, where an unimplemented interface
+  soft-fails at query time. C++ analogy: the header exports the type, the `.so`
+  exports the behavior, and the linker enforces that both are present.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
