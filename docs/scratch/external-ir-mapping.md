@@ -2,7 +2,8 @@
 
 > **2026-10-13 supersede:** the `phi` row and the phi-based `dot` mapping below are
 > superseded — `phi` was removed. LLVM/clang output maps onto block arguments fed
-> by `edge` values (see `src/examples/dot_llvm.br`). See `design-notes.md`.
+> by `edge` values (see `src/examples/dot_llvm.br`). Snippets below also predate
+> the move to id-only scope headers (`block (int64 n9)`). See `design-notes.md`.
 
 Status: design analysis, 2026-10-13. Grounded in real examples taken from this machine:
 AscendNPU-IR (`bishengir/test/Conversion/HFusionToHIVM/matmul.mlir`), a live

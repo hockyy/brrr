@@ -590,6 +590,27 @@ into (backends, frontends) via adapters.
   (scope, position) and references are by name, so the header becomes `(int64 acc)`
   exactly when printed ids stop being the surface. Recorded so the two land
   together.
+- 2026-10-13: **decided + implemented** — scope headers carry their arguments, and
+  **an argument is an id: there is no name alias**. One declaration, in the header:
+
+  ```
+  n9 join = block (int64 n10, int64 n11) { ... }     # target of `edge join x y`
+  n5 sum  = loop  (n6, n7) zero n2 { ... }           # carried args, then inits
+  ```
+
+  `param idx=k` lines are no longer needed for blocks/loops (still accepted as
+  legacy input, normalized away on print). The parser rejects a name in an argument
+  list (`block (int64 n7 acc)` -> "argument list entries are 'TYPE ID'"), because a
+  name would be an alias and aliases are gone. The printer never prints a `param`'s
+  name and never references one by name: every reference to an argument is by id.
+  Consequences: examples/showcase sources were normalized (arg names dropped,
+  references *and facts* rewritten to ids — e.g. loop_cfg `fact 0 <= n12`), queries
+  name ids (`ask loop_cfg.br count "n7 <= n2"`), and the goldens moved to the
+  id-only print. Function parameters still use the `param idx=` line form (funcs
+  have no header argument list yet) but are ids too — their names are equally dead.
+  This is the interim shape: the identifiers-as-names migration makes the printed
+  ids *be* the C++ names, so the surface reads `block (int64 acc)` again — with
+  `acc` as the actual identifier rather than an alias beside it.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

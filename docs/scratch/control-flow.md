@@ -4,7 +4,8 @@
 > this note says phi is declared or retained, read it as superseded: a block's
 > arguments, fed by its incoming `edge` values, are the only way a value crosses a
 > block boundary. `src/examples/dot_llvm.br` (clang output) is mapped without phi.
-> See `design-notes.md` for the decision.
+> Also: scope headers now carry typed arguments by id (`block (int64 n9)`),
+> `param` lines are normalized away, and argument names are gone. See `design-notes.md`.
 
 Status: implemented 2026-10-13. Mechanism: **any node opened with `{` is a scope.**
 Modules, funcs, CFG blocks, and (future) loop bodies are uniformly scope nodes with

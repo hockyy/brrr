@@ -3,13 +3,13 @@
 #   while (cond) { ... }             carried names come from body assignments
 # The canonical form (print the file to see it) is `loop` + `param`s + `loop.yield`.
 func @sum_for(n1) {
-  n2 n_val = param idx=0 type="i64"
+  n2 = param idx=0 type="i64"
   n3 zero = arith.constant type="i64" value="0"
   n4 neg_one = arith.constant type="i64" value="-1"
 
-  n5 sum = for (acc = zero, i = n_val; more; acc = new_acc, i = next_i) {
+  n5 sum = for (acc = zero, i = n2; more; acc = new_acc, i = next_i) {
     fact 0 <= i
-    fact i <= n_val
+    fact i <= n2
     n6 next_i = arith.addi i neg_one
     n7 new_acc = arith.addi acc i
     n8 more = icmp next_i zero pred="gt"

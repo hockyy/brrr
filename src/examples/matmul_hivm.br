@@ -4,7 +4,7 @@
 # schema-level port groups are a planned refinement. Index stubs and the init flag
 # constant are elided. Core/pipeline selection appears as data attrs.
 func @test_MmadL1_real_init(n1) {
-  n2 mc_arg = param idx=0 type="memref<16x16xf32>"
+  n2 = param idx=0 type="memref<16x16xf32>"
   n3 cst = arith.constant type="f32" value="0.0"
   n4 mc = bufferization.to_tensor n2 restrict="true" writable="true" type="tensor<16x16xf32>"
   n5 ma = memref.alloc shape="16x16" dtype="f16"

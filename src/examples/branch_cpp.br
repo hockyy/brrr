@@ -1,16 +1,16 @@
 # C++-shaped if/else sugar: lowered to `cbr` + branch blocks + `edge`s + a join
 # block that carries the node id/name (so `pick` is the join's value).
 func @pick_max(n1) {
-  n2 a = param idx=0 type="i64"
-  n3 b = param idx=1 type="i64"
-  n4 greater = icmp a b pred="gt"
+  n2 = param idx=0 type="i64"
+  n3 = param idx=1 type="i64"
+  n4 greater = icmp n2 n3 pred="gt"
 
   n5 pick = if (greater) {
-    fact a >= b
-    n6 = yield a
+    fact n2 >= n3
+    n6 = yield n2
   } else {
-    fact a <= b
-    n7 = yield b
+    fact n2 <= n3
+    n7 = yield n3
   }
 
   n8 = func.return pick

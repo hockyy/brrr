@@ -10,15 +10,15 @@ fact n = 512
 fact aligned(n, 16)
 
 func @countdown(n1) {
-  n2 n_val = param idx=0 type="i64"
+  n2 = param idx=0 type="i64"
   n3 zero = arith.constant type="i64" value="0"
   n4 neg = arith.constant type="i64" value="-1"
 
-  n5 count = loop n_val {
-    n6 i = param idx=0
-    fact 0 <= i
-    fact i <= n_val
-    n7 next = arith.addi i neg
+  n5 count = loop n2 {
+    n6 = param idx=0
+    fact 0 <= n6
+    fact n6 <= n2
+    n7 next = arith.addi n6 neg
     n8 more = icmp next zero pred="gt"
     n9 = loop.yield more next
   }

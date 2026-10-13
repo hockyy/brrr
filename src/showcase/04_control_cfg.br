@@ -7,22 +7,22 @@
 #   bridgeir ask     src/showcase/04_control_cfg.br then "a >= b"   -> Yes
 #   bridgeir print --c-like src/showcase/04_control_cfg.br
 func @pick_max(n1) {
-  n2 a = param idx=0 type="i64"
-  n3 b = param idx=1 type="i64"
-  n4 gt = icmp a b pred="gt"
+  n2 = param idx=0 type="i64"
+  n3 = param idx=1 type="i64"
+  n4 gt = icmp n2 n3 pred="gt"
 
   n5 then = block {
-    fact a >= b
-    n6 e_then = edge join a
+    fact n2 >= n3
+    n6 e_then = edge join n2
   }
 
   n7 else = block {
-    fact a <= b
-    n8 e_else = edge join b
+    fact n2 <= n3
+    n8 e_else = edge join n3
   }
 
   n9 join = block {
-    n10 res = param idx=0
+    n10 = param idx=0
   }
 
   n11 = cbr gt n6 n8

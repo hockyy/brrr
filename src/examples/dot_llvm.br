@@ -4,40 +4,37 @@
 # here at the branch sites instead: each edge carries the values it delivers to its
 # target block. No phi, no from-block labels, no coverage to keep in sync.
 func @dot(n1) {
-  n2 p0 = param idx=0 type="ptr<float>"
-  n3 p1 = param idx=1 type="ptr<float>"
-  n4 n = param idx=2 type="i32"
+  n2 = param idx=0 type="ptr<float>"
+  n3 = param idx=1 type="ptr<float>"
+  n4 = param idx=2 type="i32"
   n5 zero_i32 = arith.constant type="i32" value="0"
   n6 zero_f32 = arith.constant type="f32" value="0.0"
   n7 one = arith.constant type="i64" value="1"
 
   n8 entry = block {
-    n9 cond = icmp n zero_i32 pred="sgt"
+    n9 cond = icmp n4 zero_i32 pred="sgt"
     n28 e_hdr = edge header                     # header takes no values
     n29 e_exit0 = edge exit zero_f32            # was: phi [0.0, %entry]
     n10 = cbr cond e_hdr e_exit0
   }
 
   n11 header = block {
-    n12 span = zext n type="i64"
+    n12 span = zext n4 type="i64"
     n30 e_body0 = edge body zero_i32 zero_f32   # was: phi [0, %header], [0.0, %header]
     n13 = br e_body0
   }
 
-  n14 exit = block {
-    n15 res = param idx=0                       # was: phi [0.0, %entry], [%fma, %body]
-    n16 = func.return res
+  n14 exit = block (f32 n15) {              # n15 was: phi [0.0, %entry], [%fma, %body]
+    n16 = func.return n15
   }
 
-  n17 body = block {
-    n18 idx = param idx=0                       # was: phi [0, %header], [%next, %body]
-    n19 acc = param idx=1                       # was: phi [0.0, %header], [%fma, %body]
-    n20 next = arith.addi idx one
-    n21 ap0 = gep p0 idx elem="float"
+  n17 body = block (i32 n18, f32 n19) {
+    n20 next = arith.addi n18 one
+    n21 ap0 = gep n2 n18 elem="float"
     n22 av0 = llvm.load n21 align=4
-    n23 ap1 = gep p1 idx elem="float"
+    n23 ap1 = gep n3 n18 elem="float"
     n24 av1 = llvm.load n23 align=4
-    n25 fma = llvm.fmuladd av0 av1 acc
+    n25 fma = llvm.fmuladd av0 av1 n19
     n26 done = icmp next n12 pred="eq"
     n31 e_exit1 = edge exit fma                 # was: phi [%fma, %body] -> exit
     n32 e_self = edge body next fma             # was: phi [%next, %body], [%fma, %body]

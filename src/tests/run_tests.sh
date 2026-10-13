@@ -49,7 +49,7 @@ fi
 
 # Rename by id: references printed by name follow the rename.
 rename_out="$("$BIN" rename "$CASES/add.canon.br" n4 total 2>/dev/null)"
-if echo "$rename_out" | grep -q "n4 total = add acc bias beta=1.5" &&
+if echo "$rename_out" | grep -q "n4 total = add n2 n3 beta=1.5" &&
    echo "$rename_out" | grep -q "n5 out = func.return total"; then
   echo "ok: rename by id updates node and references"
 else
@@ -59,7 +59,7 @@ fi
 
 # Rename by name works too, and the journal records the history.
 rename_out="$("$BIN" rename "$CASES/add.canon.br" sum subtotal 2>/dev/null)"
-if echo "$rename_out" | grep -q "n4 subtotal = add acc bias beta=1.5"; then
+if echo "$rename_out" | grep -q "n4 subtotal = add n2 n3 beta=1.5"; then
   echo "ok: rename by name"
 else
   echo "FAIL: rename by name"
@@ -252,6 +252,25 @@ else
   echo "ok: include cycle rejected"
 fi
 
+# Scope headers carry their arguments. `block (int64 n10, int64 n11)` declares the
+# block's two arguments -- the `param idx=k` lines they replace, now written where
+# the arguments belong. Entries are `TYPE ID`: an argument is an id, never a name.
+hdr_out="$("$BIN" print "$CASES/block_header_args.br" 2>/dev/null)"
+if "$BIN" check "$CASES/block_header_args.br" 2>/dev/null | grep -q "errors: 0" &&
+   echo "$hdr_out" | grep -q "n9 join = block (int64 n10, int64 n11) {"; then
+  echo "ok: block arguments declared in the scope header (ids, no alias)"
+else
+  echo "FAIL: block header arguments"
+  fail=1
+fi
+if "$BIN" check "$CASES/bad_header_name.br" 2>&1 \
+     | grep -q "argument list entries are 'TYPE ID'"; then
+  echo "ok: a name in an argument list is rejected (no alias)"
+else
+  echo "FAIL: argument name accepted"
+  fail=1
+fi
+
 # Control flow: blocks are scopes; br/cbr/edge are declared kinds (no phi).
 if "$BIN" check "$EXAMPLES/loop_cfg.br" 2>/dev/null \
      | grep -q "errors: 0, warnings: 0"; then
@@ -262,10 +281,10 @@ else
 fi
 cfg_out="$("$BIN" print "$EXAMPLES/loop_cfg.br" 2>/dev/null)"
 if echo "$cfg_out" | grep -q "n5 entry = block {" &&
-   echo "$cfg_out" | grep -q "e_body = edge body zero n_val" &&
-   echo "$cfg_out" | grep -q "n11 acc = param idx=0" &&
+   echo "$cfg_out" | grep -q "e_body = edge body zero n2" &&
+   echo "$cfg_out" | grep -q "n10 body = block (int64 n11, int64 n12) {" &&
    echo "$cfg_out" | grep -q "n9 = cbr has e_body e_exit"; then
-  echo "ok: block-argument loop prints (edges carry passed values)"
+  echo "ok: block args print in the scope header (edges carry passed values)"
 else
   echo "FAIL: control-flow printing"
   echo "$cfg_out" | head -10
@@ -273,8 +292,8 @@ else
 fi
 
 # Scoped invariants: facts hold where written; ask answers in-scope, unknown out.
-ask_in="$("$BIN" ask "$EXAMPLES/loop_cfg.br" body "i <= n_val" 2>/dev/null)"
-ask_out="$("$BIN" ask "$EXAMPLES/loop_cfg.br" entry "i <= n_val" 2>/dev/null)"
+ask_in="$("$BIN" ask "$EXAMPLES/loop_cfg.br" body "n12 <= n2" 2>/dev/null)"
+ask_out="$("$BIN" ask "$EXAMPLES/loop_cfg.br" entry "n12 <= n2" 2>/dev/null)"
 if echo "$ask_in" | grep -q "\-> Yes" &&
    echo "$ask_out" | grep -q "\-> Unknown"; then
   echo "ok: scoped invariants answer inside the loop, unknown outside"
@@ -343,16 +362,16 @@ else
   fail=1
 fi
 simple_out="$("$BIN" print "$EXAMPLES/loop_simple.br" 2>/dev/null)"
-if echo "$simple_out" | grep -q "n5 sum = loop zero n_val {" &&
+if echo "$simple_out" | grep -q "n5 sum = loop (n6, n7) zero n2 {" &&
    echo "$simple_out" | grep -q "n11 = loop.yield more new_acc next_i" &&
    echo "$simple_out" | grep -q "n12 = func.return sum"; then
-  echo "ok: simple loop prints (carried params, yield, port exit)"
+  echo "ok: simple loop prints (carried args in header, yield, port exit)"
 else
   echo "FAIL: simple loop printing"
   echo "$simple_out" | head -14
   fail=1
 fi
-if "$BIN" ask "$EXAMPLES/loop_simple.br" sum "i <= n_val" 2>/dev/null \
+if "$BIN" ask "$EXAMPLES/loop_simple.br" sum "n7 <= n2" 2>/dev/null \
      | grep -q -- "-> Yes"; then
   echo "ok: simple loop invariants are scoped to the loop"
 else
@@ -375,10 +394,10 @@ else
   fail=1
 fi
 cpp_out="$("$BIN" print "$EXAMPLES/loop_cpp.br" 2>/dev/null)"
-if echo "$cpp_out" | grep -q "n5 sum = loop zero n_val {" &&
+if echo "$cpp_out" | grep -q "n5 sum = loop (n18, n19) zero n2 {" &&
    echo "$cpp_out" | grep -q "= loop.yield more new_acc next_i" &&
-   echo "$cpp_out" | grep -q "n14 w = loop i {"; then
-  echo "ok: for/while lower to loop scopes (carried params + yield)"
+   echo "$cpp_out" | grep -q "n14 w = loop (n21) i {"; then
+  echo "ok: for/while lower to loop scopes (carried args in header + yield)"
 else
   echo "FAIL: for/while lowering"
   echo "$cpp_out" | head -12
@@ -408,15 +427,15 @@ else
 fi
 br_out="$("$BIN" print "$EXAMPLES/branch_cpp.br" 2>/dev/null)"
 if echo "$br_out" | grep -q "= cbr greater" &&
-   echo "$br_out" | grep -q "= edge pick a" &&
-   echo "$br_out" | grep -q "n5 pick = block {"; then
+   echo "$br_out" | grep -q "= edge pick n2" &&
+   echo "$br_out" | grep -q "n5 pick = block (n12) {"; then
   echo "ok: if/else lowers to cbr + branch blocks + join block"
 else
   echo "FAIL: if/else lowering"
   echo "$br_out" | head -14
   fail=1
 fi
-if "$BIN" ask "$EXAMPLES/branch_cpp.br" n10 "a >= b" 2>/dev/null \
+if "$BIN" ask "$EXAMPLES/branch_cpp.br" n10 "n2 >= n3" 2>/dev/null \
      | grep -q -- "-> Yes"; then
   echo "ok: branch facts are scoped to their block"
 else
@@ -479,7 +498,7 @@ else
   echo "FAIL: showcase functor query"
   fail=1
 fi
-if "$BIN" ask "$SHOWCASE/04_control_cfg.br" then "a >= b" 2>/dev/null \
+if "$BIN" ask "$SHOWCASE/04_control_cfg.br" then "n2 >= n3" 2>/dev/null \
      | grep -q -- "-> Yes"; then
   echo "ok: showcase branch-scoped facts"
 else
