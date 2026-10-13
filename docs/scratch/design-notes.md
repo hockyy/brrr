@@ -539,6 +539,16 @@ into (backends, frontends) via adapters.
   so round-trip is lossless); and one fewer MLIR carry-over — `scf.while`'s
   two-region shape is unnecessary because the condition is just a named value in
   the single body plus a position bit.
+- 2026-10-13: **decided (not yet implemented)** — **drop `while`**. The surface loop
+  vocabulary is just `for` (condition tested *before* the body) and `do_while`
+  (tested *after*). So the one `loop` kind keeps a single structural bit,
+  `cond_pos: pre|post`; the header's condition operand is always the **continue**
+  condition (true → repeat), and polarity is spelling/naming, never structure — an
+  `until` reading, if wanted, is sugar for the negation of that value. A C++
+  `while (cond) { ... x = ... }` still works at the surface: it lowers to
+  `for (x = init; cond)` with the assigned names hoisted into the header by the
+  preprocessor. Net: three surface keywords become two, and the two-bit mode
+  becomes one bit.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
