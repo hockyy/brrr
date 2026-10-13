@@ -467,6 +467,42 @@ into (backends, frontends) via adapters.
   and `import` it". (If the ask also meant C89-style "declarations first inside
   every scope", that is a printer preference only — the IR stays a flat node list,
   so it needs no parser support.)
+- 2026-10-13: **decided (not yet implemented)** — declarations are C++-shaped and
+  the **type goes on the left**: `int64 z = arith.constant value=0`,
+  `int64 total, int64 last = for (int64 acc = z, int64 i = n; more;
+  acc = na, i = ni) { ... }`. Written types are optional (inferred) but
+  **verified**: the binder unifies written vs inferred type and reports the failing
+  equation on mismatch. A multi-result node returns a **record value whose fields
+  are the declared result names**, so results are read as `sum.total` (C++ member
+  access) rather than anonymous `.0`/`.1` indices; single-result nodes keep the
+  bare name. This unifies three ideas under one: results = ports = struct fields —
+  a value is a scalar or a record with named fields. Consequences: the loop's
+  carried set is a field set; sugar headers may carry optional type annotations
+  (`int acc = z`) which lowering strips; and short spellings like `int` require a
+  document alias (`alias int = int64`) because the prelude keeps explicit widths
+  only.
+- 2026-10-13: **decided (not yet implemented)** — MLIR's region model adopted
+  uniformly: **any operation may carry a body, and a body always holds block
+  arguments** (possibly none). Consequences: the `param` kind is **deleted** —
+  function parameters are the entry body's arguments, `loop` carried values are the
+  body's arguments, and a join block's parameters are its arguments. Arguments are
+  declared in the scope header, typed (optional but verified), each with an
+  identifier:
+
+  ```
+  func sum_to_n(int64 n) { ... }
+  loop sum(int64 acc, int64 i) = (z, n) { ... }
+  block join(int64 res) { ... }
+  ```
+
+  So "scope signatures" are no longer optional; they are the single canonical way
+  arguments exist. `edge` and loop-init arity checks become a comparison against
+  the target's declared argument count (today: scanning children with the `arg`
+  trait), and the checker's per-kind special-casing disappears. Core delta is
+  small: `has_body` gains an argument list. Mapping kept for reference: MLIR region
+  ↔ our `body`; block argument ↔ header argument; successor operands ↔ `edge`;
+  `yield` ↔ results (record fields); `RegionBranchOpInterface` ↔ our scoping +
+  dominance rules over the same edges.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
