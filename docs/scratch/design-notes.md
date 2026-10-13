@@ -430,6 +430,30 @@ into (backends, frontends) via adapters.
   never a silent default — contrast MLIR, where an unimplemented interface
   soft-fails at query time. C++ analogy: the header exports the type, the `.so`
   exports the behavior, and the linker enforces that both are present.
+- 2026-10-13: **decided (not yet implemented)** — `core.bs` is the **prelude**:
+  implicit, unexported, unshadowable (primitives + the language skeleton kinds
+  `module`/`func`/`param`/`func.return`). Only non-prelude modules (`lib/types.bs`,
+  `lib/ops.bs`, `control`, `arith`, user libraries) form the export surface and
+  need `import`. **Exporting/importing a module aliases it, never copies it**:
+  identity is by origin (content hash), so `export core as lang`,
+  `alias core as lang`, or a redundant `import core` are alternate *paths* to the
+  same declarations — `lang.float16 ≡ float16` for unification and checking, with
+  no new type identity and no duplicate-definition errors. Redefining a prelude
+  name is an error; different semantics means declaring a *new* class with a new
+  name, never shadowing `float16`. Aliases are also document-legal
+  (`alias f16 = float16`) because they define no vocabulary — which doubles as
+  token compression for agents.
+- 2026-10-13: **decided (not yet implemented)** — the prelude's source of truth
+  is **C++**: the internal core types (primitives + language skeleton) are defined
+  beforehand and registered by the compiler at startup, so the default resolution
+  of `float16` / `int32` / `index` / `bool` requires no `import` and no `.bs` file,
+  and `bridgeir schema` reflects them from the registration. A `core.bs` may be
+  generated for reference; if a module exports or aliases it, that is an **alias to
+  the internal set** (same identity), never a redefinition. Consequence: `.bs`
+  modules declare *extensions* — records, classes, extra kinds, hook bindings —
+  while the internal names are reserved (alias yes, shadow no). A class whose
+  semantics are C++ registers from code; a class with no C++ implementation is
+  declared in a module as data. Same registry, same identity-by-origin, either way.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
