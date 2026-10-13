@@ -148,6 +148,8 @@ no provenance) stand independently. Kept as due-diligence record.
 
 ## Rival IR "forms" (candidate related work)
 
+Full survey of families, matrix, lessons and gaps: `ir-landscape.md`.
+
 E-graph (egg, egglog; TASO/Tensat) · relational/Datalog IR (SPORES, egglog) ·
 schedule-first (Halide, TVM TensorIR, ISL schedule trees) · sea-of-nodes (Graal, C2) ·
 formal semantics (Vellvm, CompCert) · demand-driven/incremental (Adapton, Salsa) ·
