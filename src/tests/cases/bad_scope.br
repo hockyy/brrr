@@ -1,5 +1,5 @@
 # Cross-scope reference: n4 lives in sibling block `a`; only sanctioned roads
-# (terminator -> block/edge, phi -> predecessor value) may cross a boundary.
+# (terminator -> block/edge, edge -> its target) may cross a boundary.
 func @bad_scope(n1) {
   n2 x = arith.constant type="i64" value="0"
   n3 a = block {

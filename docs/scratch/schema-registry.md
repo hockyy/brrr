@@ -1,5 +1,8 @@
 # Schema registry: the language's definition (v0)
 
+> **2026-10-13 supersede:** `phi` has been **removed** from the schema; ignore any
+> `kind phi` shown below. See `design-notes.md`.
+
 Status: implemented, 2026-10-13. Answers the "the IR is too vague" critique: node
 kinds are no longer bare strings — they are declared as data with **named ports**,
 a **results policy**, and **typed attributes**, and every load validates them.

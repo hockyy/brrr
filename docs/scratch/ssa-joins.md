@@ -1,5 +1,12 @@
 # SSA joins: phi vs block arguments — and the alternatives
 
+> **2026-10-13 resolution:** this note steelmans phi, and the analysis stands — but
+> the decision went the other way and was then made final: **phi has been removed
+> from the language.** A block's arguments, fed by its incoming `edge` values, are
+> the only way a value crosses a block boundary. Every "phi remains for
+> LLVM-fidelity imports" conclusion below is superseded; `src/examples/dot_llvm.br`
+> maps clang output without phi. See `design-notes.md`.
+
 Status: design note, 2026-10-13. Companion to `control-flow.md` (mechanism and the
 block-argument form BridgeIR ships as canonical). This note steelmans phi nodes,
 then surveys every alternative for representing joins.
@@ -118,8 +125,8 @@ engine instead of per-kind code.
 
 ## BridgeIR stance
 
-Both are declared kinds in the `control` module. Canonical form: block arguments
-(`edge` + `param`), because agents and passes read edges better. `phi` remains for
-LLVM-fidelity imports. `select` covers the predication route. A `phi → args`
-normalization pass is the natural next step; nothing in the core changes for any
-of these — it is all vocabulary, swappable per module.
+Canonical form: block arguments
+(`edge` + `param`). `phi` was removed (2026-10-13) — LLVM/clang imports map
+directly onto block arguments fed by edges, so no `phi → args` pass is needed.
+`select` covers the predication route. Nothing in the core changes for any of
+these — it is all vocabulary, swappable per module.

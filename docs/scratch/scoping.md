@@ -1,5 +1,9 @@
 # Scoping rules (implemented)
 
+> **2026-10-13 supersede:** the phi crossing below is gone — `phi` was removed, so
+> the sanctioned roads are `terminator -> block/edge` and `edge -> its target`.
+> See `design-notes.md`.
+
 Status: 2026-10-13. Companion to `control-flow.md`; this is the invariant set that
 makes the rest of the design real.
 

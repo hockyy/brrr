@@ -458,12 +458,6 @@ kind select {
   results: value
 }
 
-kind phi {
-  operands: (value, block)*
-  results: value
-  traits: phi
-}
-
 kind yield {
   operands: value*
   results: none

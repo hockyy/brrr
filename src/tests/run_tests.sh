@@ -252,7 +252,7 @@ else
   echo "ok: include cycle rejected"
 fi
 
-# Control flow: blocks are scopes; br/cbr/phi are declared kinds.
+# Control flow: blocks are scopes; br/cbr/edge are declared kinds (no phi).
 if "$BIN" check "$EXAMPLES/loop_cfg.br" 2>/dev/null \
      | grep -q "errors: 0, warnings: 0"; then
   echo "ok: control-flow vocabulary validates cleanly"
@@ -311,32 +311,27 @@ else
   echo "ok: edge arity violation rejected"
 fi
 
-# Verification asymmetry: edge checking is local; phi needs derived predecessors.
+# Verification asymmetry: edge checking is local and complete; there is no phi.
 if "$BIN" check "$CASES/bad_edge_use.br" >/dev/null 2>&1; then
   echo "FAIL: edge misuse accepted"
   fail=1
 else
   echo "ok: edge misuse rejected (terminators only, exactly once)"
 fi
-if "$BIN" check "$CASES/bad_phi.br" >/dev/null 2>&1; then
-  echo "FAIL: phi with non-predecessor accepted"
-  fail=1
-else
-  echo "ok: phi referencing a non-predecessor rejected"
-fi
 
-# Declaration level: the schema states phi's tuple structure; the checker proves it.
-if "$BIN" check "$CASES/bad_phi_odd.br" >/dev/null 2>&1; then
-  echo "FAIL: odd phi arity accepted"
-  fail=1
+# phi was removed from the language: it is no longer a declared kind, so using it
+# is reported as foreign vocabulary rather than validated.
+if "$BIN" check "$CASES/phi_removed.br" 2>&1 | grep -q "unknown kind 'phi'"; then
+  echo "ok: phi is no longer a language construct (foreign vocabulary)"
 else
-  echo "ok: phi tuple structure proven from the declaration (odd count rejected)"
+  echo "FAIL: phi still declared"
+  fail=1
 fi
-if "$BIN" schema 2>/dev/null | grep -Fq "(value, block)*"; then
-  echo "ok: schema declares phi's tuple structure"
-else
-  echo "FAIL: schema phi structure"
+if "$BIN" schema 2>/dev/null | grep -Fq "kind phi"; then
+  echo "FAIL: schema still declares phi"
   fail=1
+else
+  echo "ok: schema declares no phi"
 fi
 
 # Simple structured loops: scope + carried params + loop.yield, exits as ports.
@@ -442,11 +437,11 @@ if "$BIN" check "$CASES/bad_scope.br" >/dev/null 2>&1; then
 else
   echo "ok: cross-scope reference rejected (lexical scoping + dominance)"
 fi
-# The sanctioned crossings stay legal: phi -> predecessor values, terminator -> edges.
+# The sanctioned crossings stay legal: terminator -> edges; block args carry values.
 if "$BIN" check "$EXAMPLES/dot_llvm.br" 2>/dev/null | grep -q "errors: 0"; then
-  echo "ok: phi crossings remain legal (dot_llvm)"
+  echo "ok: block-argument crossings remain legal (dot_llvm, no phi)"
 else
-  echo "FAIL: phi crossings rejected"
+  echo "FAIL: block-argument crossings rejected"
   fail=1
 fi
 # scf.while lowered to CFG: the two-region form becomes a three-block cycle in the

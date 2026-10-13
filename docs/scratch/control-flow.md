@@ -1,5 +1,11 @@
 # Control flow in BridgeIR (v0): branches and loops, completely
 
+> **2026-10-13 supersede:** `phi` has been **removed** from the language. Wherever
+> this note says phi is declared or retained, read it as superseded: a block's
+> arguments, fed by its incoming `edge` values, are the only way a value crosses a
+> block boundary. `src/examples/dot_llvm.br` (clang output) is mapped without phi.
+> See `design-notes.md` for the decision.
+
 Status: implemented 2026-10-13. Mechanism: **any node opened with `{` is a scope.**
 Modules, funcs, CFG blocks, and (future) loop bodies are uniformly scope nodes with
 stable ids, so control flow needs no new core concepts — only declared kinds.
@@ -137,8 +143,8 @@ n10 body = block {
 }
 ```
 
-`phi` remains declared for LLVM-fidelity imports (clang output maps 1:1 onto it);
-a phi→args normalization pass is the natural next step.
+`phi` was removed (2026-10-13): clang output maps onto block arguments fed by
+edges, so no phi→args normalization pass is needed — the mapping is direct.
 
 ## Structured regions (future, reserved now)
 

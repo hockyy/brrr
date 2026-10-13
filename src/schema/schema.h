@@ -31,8 +31,9 @@ struct Kind {
   //   block -> must reference a node with trait `block`
   //   edge  -> must reference a node with trait `edge`
   std::vector<std::string> operand_types;
-  // >0: operands are a tuple of this width, repeated (e.g. phi's `(value, block)*`).
-  // This makes grouping a *declared* fact the checker proves generically.
+  // >0: operands are a tuple of this width, repeated (schema syntax `(value,
+  // block)*`). This makes grouping a *declared* fact the checker proves
+  // generically. Currently unused (no kind repeats a tuple), kept as a capability.
   size_t operand_tuple_width = 0;
 
   // Results: `value` (default) or `none` (terminator; may not be used as operand).

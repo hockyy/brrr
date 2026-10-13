@@ -231,7 +231,8 @@ std::vector<Issue> checkModule(const Module& m, const schema::Registry& reg) {
   // scopes). Crossings are allowed only on sanctioned roads declared by traits:
   //   terminator -> blocks/edges (successor delivery)
   //   edge       -> its target block (operand 0)
-  //   phi        -> predecessor-block values (its whole semantics)
+  // There is no phi: a block's arguments, fed by edges, are the only way a value
+  // crosses a block boundary.
   auto scope_reachable = [&](NodeId from_scope, NodeId target_scope) {
     NodeId s = from_scope;
     while (true) {
@@ -361,7 +362,6 @@ std::vector<Issue> checkModule(const Module& m, const schema::Registry& reg) {
     const schema::Kind* nk = reg.find(n.kind);
     const bool is_terminator = has_trait(nk, "terminator");
     const bool is_edge = has_trait(nk, "edge");
-    const bool is_phi = has_trait(nk, "phi");
     for (size_t oi = 0; oi < n.operands.size(); ++oi) {
       const Node* t = m.find(n.operands[oi].id);
       if (!t) continue;
@@ -370,7 +370,7 @@ std::vector<Issue> checkModule(const Module& m, const schema::Registry& reg) {
       const bool sanctioned =
           (is_terminator &&
            (has_trait(tk, "block") || has_trait(tk, "edge"))) ||
-          (is_edge && oi == 0) || is_phi;
+          (is_edge && oi == 0);
       if (sanctioned) continue;
 
       const NodeId ub = enclosing_block(n.scope);
@@ -442,73 +442,6 @@ std::vector<Issue> checkModule(const Module& m, const schema::Registry& reg) {
       out.push_back({true, n.id, n.kind,
                      "edge value is consumed by " + std::to_string(uses) +
                          " sites (must be exactly one terminator)"});
-    }
-  }
-
-  // Phi (RELATIONAL residue): pairing and from-block typing are proven by
-  // `operands: (value, block)*`; what remains is predecessor membership and
-  // coverage — which needs the derived predecessor relation.
-  auto predecessors_of = [&](NodeId block_id) {
-    std::vector<NodeId> preds;
-    auto add = [&](NodeId p) {
-      for (const NodeId x : preds) {
-        if (x == p) return;
-      }
-      preds.push_back(p);
-    };
-    for (const Node& u : m.nodes) {
-      if (!has_trait(reg.find(u.kind), "terminator")) continue;
-      for (const ValueRef& vr : u.operands) {
-        const Node* t = m.find(vr.id);
-        if (!t) continue;
-        if (has_trait(reg.find(t->kind), "block")) {
-          if (t->id == block_id) add(u.scope);
-        } else if (has_trait(reg.find(t->kind), "edge") && !t->operands.empty() &&
-                   t->operands[0].id == block_id) {
-          add(u.scope);
-        }
-      }
-    }
-    return preds;
-  };
-
-  for (const Node& n : m.nodes) {
-    if (!has_trait(reg.find(n.kind), "phi")) continue;
-    const std::vector<NodeId> preds = predecessors_of(n.scope);
-    std::vector<NodeId> seen;
-    for (size_t i = 1; i < n.operands.size(); i += 2) {
-      const Node* from = m.find(n.operands[i].id);
-      if (!from) continue;
-      bool is_pred = false;
-      for (const NodeId p : preds) {
-        if (p == from->id) {
-          is_pred = true;
-          break;
-        }
-      }
-      if (!is_pred) {
-        const std::string label = from->name.empty()
-                                      ? ("n" + std::to_string(from->id))
-                                      : from->name;
-        out.push_back({true, n.id, n.kind,
-                       "block '" + label +
-                           "' is not a predecessor of the phi's block"});
-      }
-      bool dup = false;
-      for (const NodeId x : seen) {
-        if (x == from->id) dup = true;
-      }
-      if (dup) {
-        out.push_back({true, n.id, n.kind,
-                       "duplicate from-block in phi (one pair per predecessor)"});
-      }
-      seen.push_back(from->id);
-    }
-    if (seen.size() != preds.size()) {
-      out.push_back({true, n.id, n.kind,
-                     "phi covers " + std::to_string(seen.size()) +
-                         " predecessor(s) but the block has " +
-                         std::to_string(preds.size())});
     }
   }
 

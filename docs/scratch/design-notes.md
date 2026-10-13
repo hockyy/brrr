@@ -566,6 +566,30 @@ into (backends, frontends) via adapters.
   with the two regions fused and `cond_pos` deciding where the test sits, so a
   `scf.while` can be imported either structured or as this cycle — the cycle is the
   semantics, the structured form is the optimization surface.
+- 2026-10-13: **decided + implemented** — `phi` is **removed** from the language
+  (schema, checker, tests, examples). A block's arguments, fed by its incoming
+  `edge` values, are the *only* way a value crosses a block boundary. The
+  "phi -> predecessor values" sanctioned crossing and the whole phi relational check
+  (predecessor membership, duplicate from-block, coverage) are deleted, and
+  `src/examples/dot_llvm.br` — clang `-O1` output, the exact case phi existed for —
+  is remapped with edges + block arguments at `errors: 0`. Consequences: the
+  checker's sanctioned roads are down to `terminator -> block/edge` and `edge -> its
+  target`; no from-block bookkeeping survives anywhere, so "duplicate pair /
+  coverage kept in sync by hand" is structurally impossible. phi was the one
+  construct that made block arguments *optional*; now they are mandatory, which
+  forces the block header to carry its arguments:
+
+  ```
+  after = block (int64 a, int64 b) { ... }     # target of `edge after x y`
+  ```
+
+  That header form is the target surface, but it lands **with the identifiers-as-
+  names item**, not before: every value currently prints an `nID`, so a header
+  written today would have to spell `(int64 n9 arg0)` — id *and* name, a
+  three-token form the next migration deletes. A block argument's identity is
+  (scope, position) and references are by name, so the header becomes `(int64 acc)`
+  exactly when printed ids stop being the surface. Recorded so the two land
+  together.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

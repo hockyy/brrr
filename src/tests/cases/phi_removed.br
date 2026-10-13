@@ -1,0 +1,15 @@
+# phi was removed from the language. A block's arguments, fed by its incoming
+# edges, are the only way a value crosses a block boundary; a phi is therefore not
+# a construct the checker knows — it is reported as foreign vocabulary.
+func @phi_removed(n1) {
+  n2 zero = arith.constant type="i64" value="0"
+
+  n3 entry = block {
+    n4 e = edge body zero
+    n5 = br e
+  }
+
+  n6 body = block {
+    n7 res = phi zero entry
+  }
+}

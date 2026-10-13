@@ -1,5 +1,9 @@
 # Mapping external IRs into BridgeIR
 
+> **2026-10-13 supersede:** the `phi` row and the phi-based `dot` mapping below are
+> superseded — `phi` was removed. LLVM/clang output maps onto block arguments fed
+> by `edge` values (see `src/examples/dot_llvm.br`). See `design-notes.md`.
+
 Status: design analysis, 2026-10-13. Grounded in real examples taken from this machine:
 AscendNPU-IR (`bishengir/test/Conversion/HFusionToHIVM/matmul.mlir`), a live
 `torch.fx.symbolic_trace` capture (torch 2.13), and `clang++ -O1 -emit-llvm` output.

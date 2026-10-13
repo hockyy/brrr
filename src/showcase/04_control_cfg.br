@@ -1,7 +1,7 @@
 # 04 — Control flow, canonical form. Blocks are scopes that take parameters;
 # `edge` values deliver the branch payloads; the join block's parameters are the
-# merged values. Only sanctioned roads cross scopes (terminator -> edge, edge ->
-# its target, phi -> predecessor values); everything else is dominance-checked.
+# merged values. Only sanctioned roads cross scopes (terminator -> block/edge,
+# edge -> its target); everything else is dominance-checked. There is no phi.
 #
 #   bridgeir print   src/showcase/04_control_cfg.br
 #   bridgeir ask     src/showcase/04_control_cfg.br then "a >= b"   -> Yes
