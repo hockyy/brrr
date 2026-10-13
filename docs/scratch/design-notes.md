@@ -454,6 +454,19 @@ into (backends, frontends) via adapters.
   while the internal names are reserved (alias yes, shadow no). A class whose
   semantics are C++ registers from code; a class with no C++ implementation is
   declared in a module as data. Same registry, same identity-by-origin, either way.
+- 2026-10-13: **decided (not yet implemented)** — a document's **beginning is its
+  header**: `import` declarations followed by **local data types** (records;
+  data-only, no hooks, unexported, not importable, and cannot shadow prelude or
+  module names), then the body (facts + nodes). Canonical printing always emits the
+  header first, so diffs stay deterministic. This clarifies the earlier "no
+  vocabulary in documents" rule rather than contradicting it: definitions *with
+  semantics* live in C++ (prelude) or modules (exported), while a *local data
+  record* used by a single document is allowed at the top, because it defines no
+  shared vocabulary and carries no behavior. Error text updated accordingly:
+  "declare it in the document header (local data type) or define it in a module
+  and `import` it". (If the ask also meant C89-style "declarations first inside
+  every scope", that is a printer preference only — the IR stays a flat node list,
+  so it needs no parser support.)
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
