@@ -380,15 +380,20 @@ into (backends, frontends) via adapters.
   `lib/*.bs`. A class body is data, never methods-in-C++:
 
   ```
-  class DynamicInt : int32 {          # extends a primitive / another type
-    fields: { unit: string }          # extra fields (closed by default)
-    open: true                        # extension point: later modules may add
-    lower: int64                      # representation / lowering target
-    checks: { value_in: range, mod_ok: aligned }   # invariant hooks, by name
-    syntax: "dynint unit"             # custom syntax template for the parser gen
-    traits: pure
-    hooks: { verify: checker@v1, lower: plugin@ascend }   # engines, by reference
+  open class DynamicInt : int32 {     # `open` = later modules may add members
+    int length;
+    string unit = "t";                # default member initializer
   }
+  # `type` uses the same C++-style member syntax, closed by default:
+  #   type tensor { scalar dtype; dims shape; }
+  # Behavior stays in sibling library blocks keyed by the name (never in members):
+  #   syntax DynamicInt { "dynint length unit" }
+  #   checks DynamicInt { value_in: range, mod_ok: aligned }
+  #   lower  DynamicInt { int64 }              # representation / lowering target
+  #   traits DynamicInt { pure }
+  #   hooks  DynamicInt { verify: checker@v1, lower: plugin@ascend }
+  # Member types: a primitive (`int32`, `float16`, `index`, `bool`), a declared
+  # type/class (`tensor`, `ptr`), or a data primitive for metadata (`string`).
   ```
 
   Execution still comes from the generic engines (checker, solver, parser
