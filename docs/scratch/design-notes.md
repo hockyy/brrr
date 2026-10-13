@@ -333,6 +333,19 @@ into (backends, frontends) via adapters.
   native surface. Unifies attrs, ports, and types as one mechanism: declared
   records. The language then has exactly three declarables — `scalar` (nullary),
   `type` (record), `kind` (operation schema) — all data.
+- 2026-10-13: **decided (not yet implemented)** — generic vs custom syntax, MLIR's
+  two-form contract adopted, with the generic form *shorter* than MLIR's:
+  (a) *short generic* is normative and requires declarations — no sigils/quoting,
+  positional operands, attrs by name, results implicit (`id =`), no per-op type
+  signature, declared defaults elided, `{ }` bodies with indentation;
+  (b) *explicit generic* is the lossless fallback for undeclared/foreign kinds
+  (MLIR-shaped: quoted kind, type signature, all attrs) so unknown vocabulary still
+  round-trips; (c) custom per-kind syntax is *declared data* (a `syntax:` template
+  over field names, parser+printer generated), and free-form surface grammars stay
+  pre-lowering passes (`sugar.cpp`). Views, not modes baked into text:
+  `print --explicit` / `--types` / `--generic` / `--c-like`. Budget rule: the
+  generic form is the shortest lossless encoding *given declarations*; everything
+  elided must be reconstructible from the schema.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
