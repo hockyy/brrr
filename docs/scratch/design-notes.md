@@ -517,6 +517,28 @@ into (backends, frontends) via adapters.
   `while (cond) { ... i = next ... }` keeps working because the preprocessor
   discovers assigned names and lowers them into explicit carry-in + `yield`; the
   canonical form is always explicit about what is carried and what is returned.
+- 2026-10-13: **decided (not yet implemented)** — `do_while` is *not* a new
+  construct: it is the same bodied-scope shape as a loop, differing only in **when
+  the condition is evaluated**. So `for` / `while` / `do_while` are surface
+  spellings over one `loop` kind carrying two attribute bits — condition position
+  (`pre` for `for`/`while`, `post` for `do_while`) and polarity (`while` vs
+  `until`) — while the header, carry-in bindings, `yield` carry-over, LHS result
+  bindings and the three-way arity invariant are all identical to the loop rule
+  above:
+
+  ```
+  int32 another_scope_like = do_while (int32 i = 1, int32 j = 3; until_condition) {
+    ...
+    yield i j
+  }
+  ```
+
+  Consequences: no new checker path (same arity/scoping rules; `post` adds only
+  "the body executes at least once"); no new sugar target (the preprocessor maps
+  the keyword to the two bits and the printer emits the matching surface keyword,
+  so round-trip is lossless); and one fewer MLIR carry-over — `scf.while`'s
+  two-region shape is unnecessary because the condition is just a named value in
+  the single body plus a position bit.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
