@@ -226,6 +226,174 @@ std::vector<Issue> checkModule(const Module& m, const schema::Registry& reg) {
     }
   }
 
+  // Scoping: a reference must be visible either lexically (structured scopes:
+  // module/func/loop — through the scope chain) or by CFG dominance (block
+  // scopes). Crossings are allowed only on sanctioned roads declared by traits:
+  //   terminator -> blocks/edges (successor delivery)
+  //   edge       -> its target block (operand 0)
+  //   phi        -> predecessor-block values (its whole semantics)
+  auto scope_reachable = [&](NodeId from_scope, NodeId target_scope) {
+    NodeId s = from_scope;
+    while (true) {
+      if (s == target_scope) return true;
+      if (s == kInvalidId) return false;
+      const Node* p = m.find(s);
+      s = p ? p->scope : kInvalidId;
+    }
+  };
+  auto enclosing_with_trait = [&](NodeId scope, const char* trait) -> NodeId {
+    NodeId s = scope;
+    while (s != kInvalidId) {
+      const Node* p = m.find(s);
+      if (!p) return kInvalidId;
+      if (has_trait(reg.find(p->kind), trait)) return s;
+      s = p->scope;
+    }
+    return kInvalidId;
+  };
+  auto enclosing_block = [&](NodeId scope) {
+    return enclosing_with_trait(scope, "block");
+  };
+  auto enclosing_scope_root = [&](NodeId scope) -> NodeId {
+    NodeId s = scope;
+    while (s != kInvalidId) {
+      const Node* p = m.find(s);
+      if (!p) return kInvalidId;
+      if (p->kind == "func" || p->kind == "module") return s;
+      s = p->scope;
+    }
+    return kInvalidId;
+  };
+  auto block_label = [&](NodeId id) {
+    const Node* b = m.find(id);
+    if (!b) return "n" + std::to_string(id);
+    return b->name.empty() ? ("n" + std::to_string(id)) : b->name;
+  };
+
+  // Dominator sets per function (entry = first block in program order), computed
+  // lazily. Only consulted for block-to-block value references.
+  struct DomInfo {
+    std::vector<NodeId> blocks;
+    std::map<NodeId, size_t> index;
+    std::vector<std::vector<char>> dom;  // dom[use][def]
+  };
+  std::map<NodeId, DomInfo> dom_cache;
+  auto compute_dominators = [&](NodeId func_scope) {
+    DomInfo info;
+    for (const NodeId cid : m.childrenOf(func_scope)) {
+      const Node* c = m.find(cid);
+      if (c && has_trait(reg.find(c->kind), "block")) info.blocks.push_back(cid);
+    }
+    const size_t n = info.blocks.size();
+    for (size_t i = 0; i < n; ++i) info.index[info.blocks[i]] = i;
+    std::vector<std::vector<size_t>> succ(n);
+    for (size_t i = 0; i < n; ++i) {
+      for (const NodeId cid : m.childrenOf(info.blocks[i])) {
+        const Node* c = m.find(cid);
+        if (!c) continue;
+        const schema::Kind* ck = reg.find(c->kind);
+        if (!has_trait(ck, "terminator") && !has_trait(ck, "edge")) continue;
+        for (const ValueRef& vr : c->operands) {
+          const Node* tt = m.find(vr.id);
+          if (!tt) continue;
+          NodeId target = kInvalidId;
+          if (has_trait(reg.find(tt->kind), "block")) {
+            target = tt->id;
+          } else if (has_trait(reg.find(tt->kind), "edge") &&
+                     !tt->operands.empty()) {
+            target = tt->operands[0].id;
+          }
+          auto it = info.index.find(target);
+          if (it != info.index.end()) succ[i].push_back(it->second);
+        }
+      }
+    }
+    info.dom.assign(n, std::vector<char>(n, 1));
+    if (n > 0) {
+      info.dom[0].assign(n, 0);
+      info.dom[0][0] = 1;
+      bool changed = true;
+      while (changed) {
+        changed = false;
+        for (size_t i = 1; i < n; ++i) {
+          std::vector<size_t> preds;
+          for (size_t j = 0; j < n; ++j) {
+            for (const size_t s : succ[j]) {
+              if (s == i) preds.push_back(j);
+            }
+          }
+          std::vector<char> nd;
+          if (preds.empty()) {
+            nd.assign(n, 0);
+            nd[i] = 1;
+          } else {
+            nd = info.dom[preds[0]];
+            for (size_t k = 1; k < preds.size(); ++k) {
+              for (size_t x = 0; x < n; ++x) {
+                nd[x] = static_cast<char>(nd[x] && info.dom[preds[k]][x]);
+              }
+            }
+            nd[i] = 1;
+          }
+          if (nd != info.dom[i]) {
+            info.dom[i] = nd;
+            changed = true;
+          }
+        }
+      }
+    }
+    return info;
+  };
+  auto dominates = [&](NodeId func_scope, NodeId def_block, NodeId use_block) {
+    if (def_block == use_block) return true;
+    auto it = dom_cache.find(func_scope);
+    if (it == dom_cache.end()) {
+      it = dom_cache.emplace(func_scope, compute_dominators(func_scope)).first;
+    }
+    const DomInfo& info = it->second;
+    const auto di = info.index.find(def_block);
+    const auto ui = info.index.find(use_block);
+    if (di == info.index.end() || ui == info.index.end()) return false;
+    return info.dom[ui->second][di->second] != 0;
+  };
+
+  for (const Node& n : m.nodes) {
+    const schema::Kind* nk = reg.find(n.kind);
+    const bool is_terminator = has_trait(nk, "terminator");
+    const bool is_edge = has_trait(nk, "edge");
+    const bool is_phi = has_trait(nk, "phi");
+    for (size_t oi = 0; oi < n.operands.size(); ++oi) {
+      const Node* t = m.find(n.operands[oi].id);
+      if (!t) continue;
+      if (scope_reachable(n.scope, t->scope)) continue;
+      const schema::Kind* tk = reg.find(t->kind);
+      const bool sanctioned =
+          (is_terminator &&
+           (has_trait(tk, "block") || has_trait(tk, "edge"))) ||
+          (is_edge && oi == 0) || is_phi;
+      if (sanctioned) continue;
+
+      const NodeId ub = enclosing_block(n.scope);
+      const NodeId db = enclosing_block(t->scope);
+      if (ub != kInvalidId && db != kInvalidId) {
+        const NodeId f = enclosing_scope_root(ub);
+        if (f != kInvalidId && f == enclosing_scope_root(db) &&
+            dominates(f, db, ub)) {
+          continue;  // CFG dominance makes the definition visible here
+        }
+        out.push_back({true, n.id, n.kind,
+                       "operand n" + std::to_string(t->id) + " ('" + t->kind +
+                           "') is in block '" + block_label(db) +
+                           "' which does not dominate this use"});
+        continue;
+      }
+      out.push_back({true, n.id, n.kind,
+                     "operand n" + std::to_string(t->id) + " ('" + t->kind +
+                         "') crosses a scope boundary; pass values through "
+                         "block parameters or edges"});
+    }
+  }
+
   // Edge arity (RELATIONAL): passed values must match the target block's
   // parameters. Structure and target typing are already proven generically by
   // `operands: target: block, passed: value*`.

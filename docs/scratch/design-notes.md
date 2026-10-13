@@ -312,6 +312,15 @@ into (backends, frontends) via adapters.
   the expression lexer returned `End` instead of `Bad`, silently truncating
   `fact a >= b` to `a == b`; unknown operators now fail loudly and `>=`/`<=` are
   real inequalities.
+- 2026-10-13: scoping completed in two rules (`scoping.md`): **lexical** visibility
+  for structured scopes (module/func/loop, via parent links) and **CFG dominance**
+  for block scopes (iterative dominator pass; successors from terminators and
+  `edge`s). Crossings only on sanctioned roads declared by traits: terminator →
+  blocks/edges, edge → its target (operand 0), phi → predecessor values. The check
+  immediately caught my own `dot_llvm.br` (header value used in the body — legal by
+  dominance, illegal lexically; by-id smuggling had hidden it). Negative:
+  `bad_scope.br`. Deferred: intra-block ordering, symbol visibility, containment
+  rules (level-3 constraints), cross-module symbols.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

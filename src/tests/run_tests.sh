@@ -435,4 +435,19 @@ else
   echo "ok: mismatched if-branch yields rejected"
 fi
 
+# Lexical scoping: references must be visible through the scope chain.
+if "$BIN" check "$CASES/bad_scope.br" >/dev/null 2>&1; then
+  echo "FAIL: cross-scope reference accepted"
+  fail=1
+else
+  echo "ok: cross-scope reference rejected (lexical scoping)"
+fi
+# The sanctioned crossings stay legal: phi -> predecessor values, terminator -> edges.
+if "$BIN" check "$EXAMPLES/dot_llvm.br" 2>/dev/null | grep -q "errors: 0"; then
+  echo "ok: phi crossings remain legal (dot_llvm)"
+else
+  echo "FAIL: phi crossings rejected"
+  fail=1
+fi
+
 exit $fail
