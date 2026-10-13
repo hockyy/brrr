@@ -210,6 +210,16 @@ into (backends, frontends) via adapters.
 - 2026-10-13: dual identity adopted: stable machine ids (never renumbered) +
   human/agent-editable node names (unique per scope; renames journaled). Prototype:
   `bridgeir rename`, name-aware references and printing.
+- 2026-10-13: symbols + typing design (`symbols-and-types.md`): all names are
+  bindings (value vs symbol class); symbol refs become `Ref` data (`@name`,
+  `@mod::@fn`); typing rules are schema data solved by unification. Prototype:
+  `src/types/` + `ctest -R types` (dim propagation, failing-equation diagnostics,
+  polymorphic ops, symbolic dims).
+- 2026-10-13: symbolic-value layer designed (`symbolic-inference.md`): unknowns as
+  data, facts as constraints, tri-state queries (equal / less / aligned / bounds).
+  Prototype `src/symbolic/` + `ctest -R symbolic`. Contrast: in MLIR dims are SSA
+  values (`tensor.dim`/`reifyResultShapes`) analyzed per-pass (ValueBounds/Presburger);
+  here facts live in the IR and queries are a core service.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

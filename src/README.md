@@ -15,6 +15,9 @@ Implemented:
   delta.
 - **Canonical text format**, line-oriented, with round-trip guarantee.
 - **Provenance journal**: inserts, retargets, and renames all recorded.
+- **Symbolic layer** (prototype): unknowns and expressions as data; equality,
+  bounds, and alignment queries with tri-state answers (`src/symbolic/`,
+  `ctest -R symbolic`).
 - **Tool** `bridgeir`: `print | roundtrip | demo | rename`.
 - **Tests**: canonicalization, id-stable demo, rename by id and by name, unknown-name
   rejection, journal content, round-trip — via ctest.

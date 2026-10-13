@@ -30,8 +30,11 @@ Concept budget target: ~6 primitives; everything else is data.
    scope) whose changes are journaled deltas. `kind` names a schema; ports are ordered
    operands/results; there is no C++ class per op.
 2. **Edge** — typed relation: `data` (value flow), `scope` (lexical parent),
-   `effect` (ordering), `symbol` (name binding). Structure is explicit, not nested.
-3. **Type** — a data term `{name, args}` (recursive), not a class hierarchy.
+   `effect` (ordering), `symbol` (name binding — every named node is a binding in
+   its scope; late-bound symbol references are `Ref` data, `@mod::@fn`).
+3. **Type** — a data term `{name, args}` (recursive) with unification variables;
+   typing rules are schema data, solved by unification
+   (see `symbols-and-types.md`). Not a class hierarchy.
 4. **Data** — scalars/aggregates for attrs, templates, schemas: ints, floats, strings,
    refs, lists, maps — one serialization.
 5. **Schema** — runtime definition of a kind/type/attr: ports, validation, rules,
@@ -82,6 +85,8 @@ IN (ours, from scratch):
 - IR: nodes/edges/ports/types/data; stable IDs + editable names; scope subgraphs;
   use-def lists.
 - Registry: schemas as data (kinds/types/attrs/checks), runtime load, versioned.
+- Symbolic layer: unknowns and expressions as data; facts (equality, ranges,
+  alignment); tri-state solver queries with explanations.
 - Formats: canonical line-oriented text; versioned binary; content hash.
 - Verifier framework: structural + semantic checks + per-commit invariants.
 - Diagnostics: structured (code, severity, loc, payload), human + JSON.
