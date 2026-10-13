@@ -220,6 +220,14 @@ into (backends, frontends) via adapters.
   Prototype `src/symbolic/` + `ctest -R symbolic`. Contrast: in MLIR dims are SSA
   values (`tensor.dim`/`reifyResultShapes`) analyzed per-pass (ValueBounds/Presburger);
   here facts live in the IR and queries are a core service.
+- 2026-10-13: connector layer (`connectors.md`): queries are data → any language can
+  be a connector; local solver first, escalate on Unknown; SymPy connector
+  implemented with caching/attribution/budget (`ctest -R connector`).
+- 2026-10-13: grounded the motivating pass: bishengir `CanonicalizeTensorReshape.cpp`
+  ("Without divisibility API, parting can only assume...", static-only
+  `getStaticTotalMult`, `areLooseReassociationsCompatible` duplicated across 4
+  passes). With facts, its decision = `isEqual` + `aligned` queries; Unknown maps to
+  a runtime guard instead of an assumption.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

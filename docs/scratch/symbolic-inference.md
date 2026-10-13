@@ -100,11 +100,45 @@ per-pass re-derivation.
 - Growth: fact sets need scoping/invalidations — the journal + incremental
   machinery later keeps this cheap.
 
+## Pass usage: ComposeReshapeLoosely / FoldReshape (grounded)
+
+Real evidence from `bishengir/lib/Dialect/Tensor/Transforms/CanonicalizeTensorReshape.cpp`:
+
+- `FoldReshape::isInferrable` gives up when dynamic-dim counts differ, and its
+  comment admits the core problem: *"Only support 1 to 1 and/or 0 to 0 for now,
+  other case should be derivable by logic! Without divisibility API, parting can
+  only assume the value is the same."*
+- The pass hand-rolls `RankedTensorWithInfo::getStaticTotalMult()` — the product of
+  the **static dims only** — and compares those products; dynamic dims are assumed
+  equal because there is nothing to query.
+- `areLooseReassociationsCompatible` is re-checked with local variations in at least
+  four passes (CanonicalizeTensorReshape, ComposeMultiReduce, SwapCollapseExpand,
+  SwapMemrefCollapseExpand), each doing its own shape archaeology.
+
+With the symbolic layer the same decision is two first-hand queries:
+
+```
+Tri same = facts.isEqual(sizeExpr(src), sizeExpr(dst));  // dynamic dims included
+Tri ok   = facts.aligned(sizeExpr(dst), 16);             // vectorization legality
+// Yes -> compose; No -> keep; Unknown -> conservative (runtime guard), never assume
+```
+
+No static-only products, no "assume the same", no def-use walk: facts are recorded
+once (schema rules / contracts / importers) and the query is a solver call.
+Prototype: scenario 6 in `src/tests/symbolic_test.cpp`.
+
+## Escalation: connectors (SymPy, SMT, your language's libraries)
+
+The local solver decides the affine fragment; everything else escalates through
+**connectors** — out-of-process engines behind the same tri-state API, budgeted,
+cached by content, and attributed. First connector implemented: SymPy
+(`src/connectors/`, `ctest -R connector`). Design:
+[`connectors.md`](connectors.md).
+
 ## Next steps
 
-1. Symbol declarations in scopes (facts attach to declarations) and `type=` slots
-   upgraded from strings to structured terms carrying symbols.
-2. Schema-driven fact generation (`split`, `mm`, `pad`, `slice` rules as data).
-3. Justifications on answers (`Yes because: N ≡ 0 (mod 16), 32 ≡ 0 (mod 16)`).
-4. SMT plugin tier for anything the fragment misses, still behind the same
-   tri-state API.
+1. Facts in the text format (`fact ...` lines) and a `bridgeir decide`/pass CLI demo.
+2. Schema-driven fact generation (`split`, `mm`, `pad`, `reshape` rules as data).
+3. Justifications on local answers (`Yes because: N ≡ 0 (mod 16), 32 ≡ 0 (mod 16)`).
+4. More connectors (Z3/SMT, host-language reference evaluators) behind the same
+   tri-state API; capability manifests; answer checking.

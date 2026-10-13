@@ -87,6 +87,8 @@ IN (ours, from scratch):
 - Registry: schemas as data (kinds/types/attrs/checks), runtime load, versioned.
 - Symbolic layer: unknowns and expressions as data; facts (equality, ranges,
   alignment); tri-state solver queries with explanations.
+- Connectors: external engines (SymPy, SMT, host-language libraries) behind a
+  tri-state query protocol; cached, budgeted, attributed — the loose edge of the IR.
 - Formats: canonical line-oriented text; versioned binary; content hash.
 - Verifier framework: structural + semantic checks + per-commit invariants.
 - Diagnostics: structured (code, severity, loc, payload), human + JSON.

@@ -18,6 +18,9 @@ Implemented:
 - **Symbolic layer** (prototype): unknowns and expressions as data; equality,
   bounds, and alignment queries with tri-state answers (`src/symbolic/`,
   `ctest -R symbolic`).
+- **Connector hub** (prototype): queries are data; local solver first, escalate to
+  external engines on Unknown — SymPy connector with caching and attribution
+  (`src/connectors/`, `ctest -R connector`).
 - **Tool** `bridgeir`: `print | roundtrip | demo | rename`.
 - **Tests**: canonicalization, id-stable demo, rename by id and by name, unknown-name
   rejection, journal content, round-trip — via ctest.

@@ -96,6 +96,42 @@ int main() {
            "odd offset breaks alignment");
   }
 
+  // 6. Pass usage sketch: FoldReshape/ComposeReshapeLoosely-style decision.
+  //    Grounded in bishengir CanonicalizeTensorReshape.cpp, which admits:
+  //    "Without divisibility API, parting can only assume the value is the same"
+  //    (and hand-rolls getStaticTotalMult, ignoring dynamic dims).
+  //    With facts, the pass asks first-hand: Yes -> compose, No -> keep,
+  //    Unknown -> conservative (runtime guard), never "assume".
+  {
+    Solver s;
+    s.assertEqual(V("src_size"), C(512));
+    s.assertEqual(V("dst_size"), C(512));
+    s.assertMod("dst_size", 16, 0);
+    const Tri same = s.isEqual(V("src_size"), V("dst_size"));
+    const Tri div16 = s.aligned(V("dst_size"), 16);
+    std::printf("      fold-reshape: same=%s aligned16=%s -> %s\n",
+                toString(same), toString(div16),
+                same == Tri::Yes && div16 == Tri::Yes ? "compose" : "keep");
+    expect(same == Tri::Yes && div16 == Tri::Yes,
+           "fold-reshape: facts allow composition");
+  }
+  {
+    Solver s;
+    s.assertEqual(V("src_size"), C(512));
+    s.assertEqual(V("dst_size"), C(384));
+    const Tri same = s.isEqual(V("src_size"), V("dst_size"));
+    std::printf("      fold-reshape: 512 vs 384 -> %s (keep)\n", toString(same));
+    expect(same == Tri::No, "fold-reshape: size mismatch keeps the reshapes");
+  }
+  {
+    Solver s;  // dynamic dims, no facts: honest Unknown, not an assumption
+    const Tri same = s.isEqual(V("src_size"), V("dst_size"));
+    std::printf("      fold-reshape: unknown sizes -> %s (runtime guard)\n",
+                toString(same));
+    expect(same == Tri::Unknown,
+           "fold-reshape: unknowns fall back instead of assuming");
+  }
+
   if (failures == 0) std::printf("\nall symbolic tests passed\n");
   return failures == 0 ? 0 : 1;
 }

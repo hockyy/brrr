@@ -54,13 +54,16 @@ class Solver {
   std::pair<std::optional<int64_t>, std::optional<int64_t>> bounds(
       const Expr& e) const;
 
+  // Apply asserted equalities — used to hand fact-substituted expressions to
+  // connectors.
+  Expr subst(const Expr& e) const;
+
  private:
   struct Interval {
     std::optional<int64_t> lo, hi;
   };
 
   std::map<std::string, Expr> substMap() const;
-  Expr subst(const Expr& e) const;
   Interval evalInterval(const Expr& e) const;
   std::optional<int64_t> residueOf(const Expr& e, int64_t m) const;
 

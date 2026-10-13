@@ -16,6 +16,7 @@ add_library(bridgeir_core
   types/types.cpp
   types/infer.cpp
   symbolic/symbolic.cpp
+  connectors/connectors.cpp
 )
 target_include_directories(bridgeir_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(bridgeir_core PRIVATE -Wall -Wextra)
@@ -35,3 +36,7 @@ add_test(NAME types COMMAND bridgeir_types_test)
 add_executable(bridgeir_symbolic_test tests/symbolic_test.cpp)
 target_link_libraries(bridgeir_symbolic_test PRIVATE bridgeir_core)
 add_test(NAME symbolic COMMAND bridgeir_symbolic_test)
+
+add_executable(bridgeir_connector_test tests/connector_test.cpp)
+target_link_libraries(bridgeir_connector_test PRIVATE bridgeir_core)
+add_test(NAME connector COMMAND bridgeir_connector_test)
