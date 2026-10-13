@@ -503,6 +503,20 @@ into (backends, frontends) via adapters.
   ↔ our `body`; block argument ↔ header argument; successor operands ↔ `edge`;
   `yield` ↔ results (record fields); `RegionBranchOpInterface` ↔ our scoping +
   dominance rules over the same edges.
+- 2026-10-13: **decided (not yet implemented)** — no step-assignment list in the
+  header (`acc = na, i = ni` is *not* allowed in canonical IR). Carry-in is declared
+  in the header, carry-over is stated by the body's `yield`, and the arity
+  invariant is **three-way**: `carry-in bindings == body arguments == yielded
+  values == result bindings`. Header form: `for (int64 acc = z, int64 i = n; more)
+  { ... yield na ni }` — init in the header, the continue-condition as a named
+  value (computable in the body, since header args are in scope and resolution is
+  order-independent), updates only via `yield`. Therefore `loop.yield` is *pure*
+  carry-over (`operands: value*`; the condition no longer occupies the first
+  operand) and the check becomes "yield count == arg count" instead of "args + 1".
+  Deliberate asymmetry: **sugar may infer carry-over, the IR never does** — C++
+  `while (cond) { ... i = next ... }` keeps working because the preprocessor
+  discovers assigned names and lowers them into explicit carry-in + `yield`; the
+  canonical form is always explicit about what is carried and what is returned.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
