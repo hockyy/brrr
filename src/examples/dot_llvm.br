@@ -1,37 +1,40 @@
 # Mapping of: clang++ -O1 -S -emit-llvm on
 #   float dot(const float* a, const float* b, int n);
-# Conventions (proposed, see docs/scratch/external-ir-mapping.md):
-#   blocks are nodes; terminator targets are operands; phi lists (value, from-block)
-#   operand pairs; in="nX" marks block membership.
+# Blocks are scopes; br/cbr are declared; phi lists (value, from-block) pairs.
+# Cross-block values use stable ids (e.g. n25 below); names stay scope-local.
 func @dot(n1) {
   n2 p0 = param idx=0 type="ptr<float>"
   n3 p1 = param idx=1 type="ptr<float>"
   n4 n = param idx=2 type="i32"
+  n5 zero_i32 = arith.constant type="i32" value="0"
+  n6 zero_f32 = arith.constant type="f32" value="0.0"
+  n7 one = arith.constant type="i64" value="1"
 
-  n5 entry = block
-  n6 zero_i32 = arith.constant type="i32" value="0" in="n5"
-  n7 cond = icmp n n6 pred="sgt" type="i1" in="n5"
-  n8 = br cond header exit in="n5"
-  n9 zero_f32 = arith.constant type="f32" value="0.0" in="n5"
+  n8 entry = block {
+    n9 cond = icmp n zero_i32 pred="sgt"
+    n10 = cbr cond header exit
+  }
 
-  n10 header = block
-  n11 span = zext n type="i64" in="n10"
-  n12 = br body in="n10"
+  n11 header = block {
+    n12 span = zext n type="i64"
+    n13 = br body
+  }
 
-  n13 exit = block
-  n14 res = phi zero_f32 entry fma body in="n13"
-  n15 = func.return res in="n13"
+  n14 exit = block {
+    n15 res = phi zero_f32 entry n25 body
+    n16 = func.return res
+  }
 
-  n16 body = block
-  n17 idx = phi zero_i32 header next body in="n16"
-  n18 acc = phi zero_f32 header fma body in="n16"
-  n19 ap0 = gep p0 idx elem="float" in="n16"
-  n20 av0 = load n19 align=4 in="n16"
-  n21 ap1 = gep p1 idx elem="float" in="n16"
-  n22 av1 = load n21 align=4 in="n16"
-  n23 fma = llvm.fmuladd av0 av1 acc in="n16"
-  n24 one = arith.constant type="i64" value="1" in="n16"
-  n25 next = arith.addi idx one in="n16"
-  n26 done = icmp next span pred="eq" type="i1" in="n16"
-  n27 = br done exit body in="n16"
+  n17 body = block {
+    n18 idx = phi zero_i32 header next body
+    n19 acc = phi zero_f32 header fma body
+    n20 next = arith.addi idx one
+    n21 ap0 = gep p0 idx elem="float"
+    n22 av0 = llvm.load n21 align=4
+    n23 ap1 = gep p1 idx elem="float"
+    n24 av1 = llvm.load n23 align=4
+    n25 fma = llvm.fmuladd av0 av1 acc
+    n26 done = icmp next n12 pred="eq"
+    n27 = cbr done exit body
+  }
 }

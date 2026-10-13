@@ -4,5 +4,5 @@ func @add(n1) {
   n3 bias = param idx=1
   n4 sum = add acc bias beta=1.5
   n6 = relu sum
-  n5 out = ret n6
+  n5 out = func.return n6
 }

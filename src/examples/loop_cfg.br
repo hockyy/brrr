@@ -1,0 +1,28 @@
+# CFG branches and loops: any node opened with `{` is a scope; br/cbr/phi are
+# declared kinds. Names are scope-local; cross-block values use stable ids.
+func @sum_to_n(n1) {
+  n2 n_val = param idx=0 type="i64"
+  n3 zero = arith.constant type="i64" value="0"
+  n4 neg_one = arith.constant type="i64" value="-1"
+
+  n5 entry = block {
+    n6 has = icmp n_val zero pred="gt"
+    n7 = cbr has body exit
+  }
+
+  n8 body = block {
+    fact 0 <= i
+    fact i <= n_val
+    n9 acc = phi zero entry new_acc body
+    n10 i = phi n_val entry next_i body
+    n11 next_i = arith.addi i neg_one
+    n12 new_acc = arith.addi acc i
+    n13 more = icmp next_i zero pred="gt"
+    n14 = cbr more body exit
+  }
+
+  n15 exit = block {
+    n16 res = phi zero entry n12 body
+    n17 = func.return res
+  }
+}

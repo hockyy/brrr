@@ -1,0 +1,8 @@
+# Shared library fragment: a fact + a root-level function, pulled in via #include.
+# Keep id ranges disjoint across files that get included together (here: n1-n9).
+fact tile = 128
+
+func @identity(n1) {
+  n2 x = load dtype=@f16 shape="tile"
+  n3 = func.return x
+}

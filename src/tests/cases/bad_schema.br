@@ -1,0 +1,5 @@
+# Schema violation: reshape requires one operand ('source').
+func @bad(n1) {
+  n2 r = reshape in="A" out="B"
+  n3 = func.return r
+}

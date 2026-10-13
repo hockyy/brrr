@@ -135,60 +135,91 @@ bool parseAttrValue(const std::string& tok, AttrValue* out) {
   return false;
 }
 
+// Resolve a name from a scope chain: innermost scope outward, then root.
+const Node* resolveName(const Module& m, NodeId from_scope,
+                        const std::string& nm) {
+  NodeId scope = from_scope;
+  while (scope != kInvalidId) {
+    for (const Node& n : m.nodes) {
+      if (n.scope == scope && n.name == nm) return &n;
+    }
+    const Node* s = m.find(scope);
+    scope = s ? s->scope : kInvalidId;
+  }
+  for (const Node& n : m.nodes) {
+    if (n.scope == kInvalidId && n.name == nm) return &n;
+  }
+  return nullptr;
+}
+
+// Prefer the target's name when it resolves back to the same node; otherwise id.
+std::string refText(const Module& m, NodeId from_scope, const ValueRef& vr) {
+  const Node* t = m.find(vr.id);
+  std::string ref;
+  if (t && !t->name.empty()) {
+    const Node* r = resolveName(m, from_scope, t->name);
+    if (r && r->id == vr.id) ref = t->name;
+  }
+  if (ref.empty()) ref = "n" + std::to_string(vr.id);
+  if (vr.port != 0) ref += "." + std::to_string(vr.port);
+  return ref;
+}
+
+std::string nodeLine(const Module& m, const Node& n, const std::string& indent) {
+  std::string line = indent + "n" + std::to_string(n.id);
+  if (!n.name.empty()) line += " " + n.name;
+  line += " = " + n.kind;
+  for (const ValueRef& vr : n.operands) line += " " + refText(m, n.scope, vr);
+  for (const auto& [k, v] : n.attrs) line += " " + k + "=" + v.toString();
+  return line + "\n";
+}
+
+// Any node opened with `{` is a scope: modules, funcs, blocks, loops. Scope facts
+// (invariants) print inside the body they were written in.
+std::string scopeBlock(const Module& m, const Node& n,
+                       const std::string& indent) {
+  std::string out;
+  if (n.kind == "func" || n.kind == "module") {
+    out = indent + n.kind + " @" + n.attrString("sym", "anon") + "(n" +
+          std::to_string(n.id) + ") {\n";
+  } else {
+    out = indent + "n" + std::to_string(n.id);
+    if (!n.name.empty()) out += " " + n.name;
+    out += " = " + n.kind;
+    for (const ValueRef& vr : n.operands) out += " " + refText(m, n.scope, vr);
+    for (const auto& [k, v] : n.attrs) out += " " + k + "=" + v.toString();
+    out += " {\n";
+  }
+  for (const Module::FactEntry& f : m.facts) {
+    if (f.scope == n.id) out += indent + "  " + f.line + "\n";
+  }
+  for (const NodeId cid : m.childrenOf(n.id)) {
+    const Node* c = m.find(cid);
+    if (!c) continue;
+    out += c->has_body ? scopeBlock(m, *c, indent + "  ")
+                       : nodeLine(m, *c, indent + "  ");
+  }
+  out += indent + "}\n";
+  return out;
+}
+
 }  // namespace
 
 std::string printModule(const Module& m) {
   std::string out = "# bridgeir v0\n";
 
-  // Facts are part of the document and round-trip verbatim.
-  for (const std::string& f : m.facts) out += f + "\n";
+  // Root facts are part of the document and round-trip verbatim.
+  for (const Module::FactEntry& f : m.facts) {
+    if (f.scope == kInvalidId) out += f.line + "\n";
+  }
 
-  // Resolve a name from a scope: scope first, then module level.
-  auto resolveName = [&](NodeId from_scope, const std::string& nm) -> const Node* {
-    const Node* global = nullptr;
-    for (const Node& n : m.nodes) {
-      if (n.name != nm) continue;
-      if (n.scope == from_scope) return &n;
-      if (n.scope == kInvalidId) global = &n;
-    }
-    return global;
-  };
-
-  // Prefer the target's name when it resolves back to the same node; otherwise id.
-  auto refString = [&](const Node& from, const ValueRef& vr) {
-    const Node* t = m.find(vr.id);
-    std::string ref;
-    if (t && !t->name.empty()) {
-      const Node* r = resolveName(from.scope, t->name);
-      if (r && r->id == vr.id) ref = t->name;
-    }
-    if (ref.empty()) ref = "n" + std::to_string(vr.id);
-    if (vr.port != 0) ref += "." + std::to_string(vr.port);
-    return ref;
-  };
-
-  auto printNodeLine = [&](const Node& n, const std::string& indent) {
-    out += indent + "n" + std::to_string(n.id);
-    if (!n.name.empty()) out += " " + n.name;
-    out += " = " + n.kind;
-    for (const ValueRef& vr : n.operands) out += " " + refString(n, vr);
-    for (const auto& [k, v] : n.attrs) out += " " + k + "=" + v.toString();
-    out += "\n";
-  };
-
-  for (NodeId id : m.top_level) {
+  for (const NodeId id : m.top_level) {
     const Node* n = m.find(id);
     if (!n) continue;
-    if (n->kind == "func") {
-      out += "func @" + n->attrString("sym", "anon") + "(n" +
-             std::to_string(n->id) + ") {\n";
-      for (NodeId cid : m.childrenOf(n->id)) {
-        const Node* c = m.find(cid);
-        if (c) printNodeLine(*c, "  ");
-      }
-      out += "}\n";
+    if (n->has_body) {
+      out += scopeBlock(m, *n, "");
     } else {
-      printNodeLine(*n, "");
+      out += nodeLine(m, *n, "");
     }
   }
   return out;
@@ -237,12 +268,14 @@ ParseResult parseModule(const std::string& text) {
     const std::vector<std::string> tok = tokenize(line);
     if (tok.empty()) continue;
 
-    // Facts are part of the document; kept raw here (the symbolic layer parses
-    // them, and ir/ does not depend on it).
+    // Facts are scoped: they hold where they are written and are visible to
+    // inner scopes through the scope chain.
     if (tok[0] == "fact") {
       const size_t b = line.find_first_not_of(" \t");
       const size_t e = line.find_last_not_of(" \t");
-      res.module.facts.push_back(line.substr(b, e - b + 1));
+      res.module.facts.push_back(
+          {scope_stack.empty() ? kInvalidId : scope_stack.back(),
+           line.substr(b, e - b + 1)});
       continue;
     }
 
@@ -252,42 +285,48 @@ ParseResult parseModule(const std::string& text) {
       continue;
     }
 
-    if (tok[0] == "func") {
+    if (tok[0] == "func" || tok[0] == "module") {
+      const std::string what = tok[0];
       if (tok.size() != 3 || tok[2] != "{") {
-        fail("expected: func @name(nID) {");
+        fail("expected: " + what + " @name(nID) {");
         break;
       }
       const std::string& head = tok[1];
       const size_t lp = head.find('(');
       if (head.empty() || head[0] != '@' || lp == std::string::npos ||
           head.back() != ')') {
-        fail("malformed function header");
+        fail("malformed " + what + " header");
         break;
       }
       const std::string sym = head.substr(1, lp - 1);
       NodeId id;
       if (!parseNodeIdToken(head.substr(lp + 1, head.size() - lp - 2), &id)) {
-        fail("malformed function id");
+        fail("malformed " + what + " id");
         break;
       }
       if (res.module.contains(id)) { fail("duplicate node id"); break; }
       Node n;
       n.id = id;
-      n.kind = "func";
+      n.kind = what;
+      n.scope = scope_stack.empty() ? kInvalidId : scope_stack.back();
+      n.has_body = true;
       n.attrs["sym"] = AttrValue::fromSym(sym);
       res.module.appendParsedNode(std::move(n));
       scope_stack.push_back(id);
       continue;
     }
 
-    // Node: nID [name] = kind [ref...] [key=value...]
+    // Node: nID [name] = kind [ref...] [key=value...] [{]
     NodeId id;
     if (!parseNodeIdToken(tok[0], &id)) { fail("malformed node id"); break; }
     if (res.module.contains(id)) { fail("duplicate node id"); break; }
 
+    const bool opens_body = tok.back() == "{";
+    const size_t end = opens_body ? tok.size() - 1 : tok.size();
+
     size_t i = 1;
     std::string name;
-    if (i < tok.size() && tok[i] != "=") {
+    if (i < end && tok[i] != "=") {
       name = tok[i];
       if (!isValidNodeName(name)) {
         fail("invalid node name '" + name + "'");
@@ -295,15 +334,16 @@ ParseResult parseModule(const std::string& text) {
       }
       ++i;
     }
-    if (i >= tok.size() || tok[i] != "=") { fail("expected '='"); break; }
+    if (i >= end || tok[i] != "=") { fail("expected '='"); break; }
     ++i;
-    if (i >= tok.size()) { fail("expected node kind"); break; }
+    if (i >= end) { fail("expected node kind"); break; }
 
     Node n;
     n.id = id;
     n.name = name;
     n.kind = tok[i++];
     n.scope = scope_stack.empty() ? kInvalidId : scope_stack.back();
+    n.has_body = opens_body;
 
     if (!name.empty()) {
       bool dup = false;
@@ -315,7 +355,7 @@ ParseResult parseModule(const std::string& text) {
 
     bool bad = false;
     std::vector<size_t> local_pending;
-    for (; i < tok.size(); ++i) {
+    for (; i < end; ++i) {
       const std::string& t = tok[i];
       ValueRef vr;
       if (parseIdRef(t, &vr)) {
@@ -348,19 +388,28 @@ ParseResult parseModule(const std::string& text) {
     res.module.appendParsedNode(std::move(n));
     const size_t node_index = res.module.nodes.size() - 1;
     for (size_t pi : local_pending) pending[pi].node_index = node_index;
+    if (opens_body) scope_stack.push_back(id);
   }
 
-  if (res.ok && !scope_stack.empty()) fail("unterminated function block");
+  if (res.ok && !scope_stack.empty()) fail("unterminated block");
 
-  // Resolve name references (scope first, then module level; order-independent).
+  // Resolve name references (scope chain first, then root; order-independent).
   if (res.ok) {
     for (const Pending& p : pending) {
       const Node& from = res.module.nodes[p.node_index];
       const Node* found = nullptr;
-      for (const Node& n : res.module.nodes) {
-        if (n.name != p.name) continue;
-        if (n.scope == from.scope) { found = &n; break; }
-        if (n.scope == kInvalidId && !found) found = &n;
+      NodeId scope = from.scope;
+      while (scope != kInvalidId && !found) {
+        for (const Node& n : res.module.nodes) {
+          if (n.scope == scope && n.name == p.name) { found = &n; break; }
+        }
+        const Node* s = res.module.find(scope);
+        scope = s ? s->scope : kInvalidId;
+      }
+      if (!found) {
+        for (const Node& n : res.module.nodes) {
+          if (n.scope == kInvalidId && n.name == p.name) { found = &n; break; }
+        }
       }
       if (!found) {
         res.ok = false;

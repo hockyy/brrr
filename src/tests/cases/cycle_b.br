@@ -1,0 +1,3 @@
+#include "cycle_a.br"
+module @b(n1) {
+}

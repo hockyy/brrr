@@ -154,4 +154,31 @@ Expr parseExpr(const std::string& text, std::string* err) {
   return p.parse(err);
 }
 
+namespace {
+std::string trimForSplit(const std::string& s) {
+  const size_t b = s.find_first_not_of(" \t");
+  if (b == std::string::npos) return "";
+  const size_t e = s.find_last_not_of(" \t");
+  return s.substr(b, e - b + 1);
+}
+}  // namespace
+
+std::vector<std::string> splitTopLevel(const std::string& s, char delim) {
+  std::vector<std::string> out;
+  std::string cur;
+  int depth = 0;
+  for (const char c : s) {
+    if (c == '(') ++depth;
+    if (c == ')') --depth;
+    if (c == delim && depth == 0) {
+      out.push_back(trimForSplit(cur));
+      cur.clear();
+    } else {
+      cur += c;
+    }
+  }
+  out.push_back(trimForSplit(cur));
+  return out;
+}
+
 }  // namespace bridgeir::symbolic

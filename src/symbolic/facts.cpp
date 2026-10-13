@@ -27,24 +27,6 @@ bool parseIntStrict(const std::string& s, int64_t* out) {
   return true;
 }
 
-std::vector<std::string> splitTopLevel(const std::string& s, char delim) {
-  std::vector<std::string> out;
-  std::string cur;
-  int depth = 0;
-  for (const char c : s) {
-    if (c == '(') ++depth;
-    if (c == ')') --depth;
-    if (c == delim && depth == 0) {
-      out.push_back(trim(cur));
-      cur.clear();
-    } else {
-      cur += c;
-    }
-  }
-  out.push_back(trim(cur));
-  return out;
-}
-
 }  // namespace
 
 bool applyFact(const std::string& line, Solver& s, std::string* err) {
@@ -131,6 +113,21 @@ bool applyFact(const std::string& line, Solver& s, std::string* err) {
     return false;
   }
 
+  // Inequality form: expr <= expr (strict `<` is not supported; use `<=`).
+  const size_t le = body.find("<=");
+  if (le != std::string::npos) {
+    Expr lhs = parseExpr(trim(body.substr(0, le)), err);
+    if (!lhs) return false;
+    Expr rhs = parseExpr(trim(body.substr(le + 2)), err);
+    if (!rhs) return false;
+    if (s.lessOrEqual(rhs, lhs) == Tri::No) {
+      *err = "fact contradicts existing facts: " + trim(body) + " is refuted";
+      return false;
+    }
+    s.assertLe(lhs, rhs);
+    return true;
+  }
+
   // Equality form: expr = expr
   const size_t eq = body.find('=');
   if (eq == std::string::npos) {
@@ -155,6 +152,74 @@ bool applyFacts(const std::vector<std::string>& lines, Solver& s,
     if (!applyFact(line, s, err)) return false;
   }
   return true;
+}
+
+namespace {
+
+// Apply every fact on the chain root -> scope, in document order per scope.
+bool applyScopeChain(const bridgeir::Module& m, bridgeir::NodeId scope,
+                     Solver* s, std::string* err) {
+  std::vector<bridgeir::NodeId> chain;
+  for (bridgeir::NodeId x = scope; x != bridgeir::kInvalidId;) {
+    chain.push_back(x);
+    const bridgeir::Node* n = m.find(x);
+    x = n ? n->scope : bridgeir::kInvalidId;
+  }
+  for (size_t i = 0, j = chain.size(); i + 1 < j; ++i, --j) {
+    std::swap(chain[i], chain[j - 1]);
+  }
+  auto applyScope = [&](bridgeir::NodeId sc) {
+    for (const bridgeir::Module::FactEntry& f : m.facts) {
+      if (f.scope == sc) {
+        if (!applyFact(f.line, *s, err)) return false;
+      }
+    }
+    return true;
+  };
+  if (!applyScope(bridgeir::kInvalidId)) return false;
+  for (const bridgeir::NodeId x : chain) {
+    if (!applyScope(x)) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool validateAllFacts(const bridgeir::Module& m, std::string* err) {
+  std::vector<bridgeir::NodeId> scopes;
+  scopes.push_back(bridgeir::kInvalidId);
+  for (const bridgeir::Module::FactEntry& f : m.facts) {
+    if (f.scope == bridgeir::kInvalidId) continue;
+    bool seen = false;
+    for (const bridgeir::NodeId x : scopes) {
+      if (x == f.scope) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) scopes.push_back(f.scope);
+  }
+  for (const bridgeir::NodeId sc : scopes) {
+    Solver s;
+    std::string local;
+    if (!applyScopeChain(m, sc, &s, &local)) {
+      *err = (sc == bridgeir::kInvalidId ? std::string("root")
+                                         : "scope n" + std::to_string(sc)) +
+             ": " + local;
+      return false;
+    }
+  }
+  return true;
+}
+
+Solver solverForScope(const bridgeir::Module& m, bridgeir::NodeId scope,
+                      std::string* err) {
+  Solver s;
+  std::string local;
+  if (!applyScopeChain(m, scope, &s, &local)) {
+    if (err) *err = local;
+  }
+  return s;
 }
 
 }  // namespace bridgeir::symbolic

@@ -233,6 +233,40 @@ into (backends, frontends) via adapters.
   consistency checks at apply time; `bridgeir facts` + `bridgeir fold-reshape`
   demo passes reading facts straight from the IR text. (User's point: the ability
   must be native to the language, not a bolted-on library.)
+- 2026-10-13: schema registry v0 wired: kinds with named ports / results policy /
+  typed attrs; validation on every load (`check`), foreign vocabulary warned;
+  inheritance (`kind X < Parent`) + traits; `bridgeir schema|check`, `--schemas=`;
+  examples converged (`ret` -> `func.return`, `load` -> `llvm.load`).
+- 2026-10-13: paradigm recorded (`paradigm.md`): **procedural core + object-shaped
+  data** (explicitly not Java-style OO: no method dispatch on objects, no class
+  hierarchies — inheritance is flat field sharing); methods are rules/procedures as
+  data. Encodings interchangeable — JSON wire format added (`to-json`); return
+  types defined by typing signatures (`result_type`), to be carried in the schema
+  next.
+- 2026-10-13: primitive data types declared in the schema (`scalar f16 { domain:
+  float bits: 16 }`, ...); attr type `dtype` validates against declared scalars
+  (`dtype=@f8` is an error).
+- 2026-10-13: mini-C++ surface engaged: C-like **view** implemented (`print
+  --c-like`) — agents are C++-fluent, so a readable skin is high-leverage;
+  semantics/ids/facts unchanged (ids as `// nID` comments); a parseable C-like
+  dialect is the candidate third encoding. (`paradigm.md`)
+- 2026-10-13: modules formalized as the top-level unit and symbol root:
+  `module @name(mID) { func ... }` (kind `module` declared, validated); nested
+  scopes print/round-trip; name resolution walks the scope chain; modules are the
+  serialization/exchange boundary for connectors and importers.
+- 2026-10-13: `#include` implemented (tool-level expansion, cycle-checked,
+  `--include=<dir>` search paths): IR composes textually like C. Architecture
+  statement recorded: thin **core runner** (main head + parser + runner/executor),
+  and **the rest is just modules** — IR fragments via include, vocabulary via
+  `--schemas`, engines via connectors, passes via plugins. Demo:
+  `examples/app_includes.br`.
+- 2026-10-13: control flow made first-hand (`control-flow.md`): **any node opened
+  with `{` is a scope** (modules/funcs/blocks uniformly); declared
+  `block`/`br`/`cbr`/`phi` (+ `yield` reserved, `icmp`/`arith.*` common vocabulary);
+  CFG loop example `examples/loop_cfg.br`; `dot_llvm.br` rewritten to native block
+  scopes. Rule: names are scope-local, stable ids are global — cross-block values
+  use ids by design. Structured regions land on the same mechanism (region args +
+  multi-port results outstanding).
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

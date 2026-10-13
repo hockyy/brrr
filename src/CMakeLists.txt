@@ -12,13 +12,17 @@ endif()
 add_library(bridgeir_core
   ir/ir.cpp
   ir/text.cpp
+  io/json.cpp
+  io/c_like.cpp
   passes/demo_fuse.cpp
   passes/fold_reshape.cpp
+  schema/schema.cpp
   types/types.cpp
   types/infer.cpp
   symbolic/symbolic.cpp
   symbolic/expr_io.cpp
   symbolic/facts.cpp
+  verify/check.cpp
   connectors/connectors.cpp
 )
 target_include_directories(bridgeir_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

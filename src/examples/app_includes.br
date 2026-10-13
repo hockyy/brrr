@@ -1,0 +1,9 @@
+# The application module: everything else composes via #include.
+#include "lib_shared.br"
+
+module @kernels(n10) {
+  func @use_lib(n11) {
+    n12 y = load dtype=@f16 shape="tile"
+    n13 = func.return y
+  }
+}

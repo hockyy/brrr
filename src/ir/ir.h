@@ -53,7 +53,8 @@ struct Node {
   std::string kind;
   std::vector<ValueRef> operands;          // data edges
   std::map<std::string, AttrValue> attrs;  // sorted => canonical printing
-  NodeId scope = kInvalidId;               // enclosing scope (e.g. func) or invalid
+  NodeId scope = kInvalidId;               // enclosing scope or invalid
+  bool has_body = false;  // opened a braced body: this node is a scope
 
   const AttrValue* findAttr(const std::string& key) const;
   std::string attrString(const std::string& key,
@@ -69,10 +70,17 @@ struct JournalEntry {
 
 class Module {
  public:
+  // Facts are scoped: invariants hold where they are written (block/loop bodies)
+  // and are visible to inner scopes through the scope chain.
+  struct FactEntry {
+    NodeId scope = kInvalidId;  // kInvalidId = document root
+    std::string line;           // raw `fact ...` line
+  };
+
   std::vector<Node> nodes;        // program order
   std::vector<NodeId> top_level;  // functions and scope-less nodes, in order
   std::vector<JournalEntry> journal;
-  std::vector<std::string> facts;  // raw `fact ...` lines from the document
+  std::vector<FactEntry> facts;
 
   // Stable-id allocator: strictly monotonic — never renumbers, never reuses.
   NodeId allocId();

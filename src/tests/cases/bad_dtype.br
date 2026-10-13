@@ -1,0 +1,5 @@
+# Unknown scalar must be rejected: f8 is not a declared primitive.
+func @bad_dtype(n1) {
+  n2 x = load dtype=@f8 shape="N"
+  n3 = func.return x
+}

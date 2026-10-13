@@ -1,0 +1,5 @@
+# Test schema for --schemas: `neg` inherits ports, results, and traits from the
+# core kind `unary`.
+kind neg < unary {
+  attrs: none
+}

@@ -341,4 +341,51 @@ std::pair<std::optional<int64_t>, std::optional<int64_t>> Solver::bounds(
   return {i.lo, i.hi};
 }
 
+void Solver::assertLe(const Expr& a, const Expr& b) {
+  le_facts_.emplace_back(a, b);
+}
+
+// a <= b, decided from: constant differences, asserted <= facts with the same
+// linear shape, and interval bounds. Unknown is honest.
+Tri Solver::lessOrEqual(const Expr& a, const Expr& b) const {
+  const Expr a2 = subst(a);
+  const Expr b2 = subst(b);
+  const auto ca = linOf(a2);
+  const auto cb = linOf(b2);
+
+  if (ca && cb) {
+    LinForm d = *ca;
+    d.c -= cb->c;
+    for (const auto& [k, v] : cb->coeffs) d.coeffs[k] -= v;
+    dropZeroCoeffs(d);
+
+    if (d.coeffs.empty()) return d.c <= 0 ? Tri::Yes : Tri::No;
+
+    // Same-shape implication: if F <= 0 is a fact and D <= F, then D <= 0.
+    for (const auto& [fa, fb] : le_facts_) {
+      const auto cfa = linOf(subst(fa));
+      const auto cfb = linOf(subst(fb));
+      if (!cfa || !cfb) continue;
+      LinForm f = *cfa;
+      f.c -= cfb->c;
+      for (const auto& [k, v] : cfb->coeffs) f.coeffs[k] -= v;
+      dropZeroCoeffs(f);
+      if (f.coeffs == d.coeffs && d.c <= f.c) return Tri::Yes;
+    }
+
+    const Interval la = evalInterval(a2);
+    const Interval lb = evalInterval(b2);
+    if (la.hi && lb.lo && *la.hi <= *lb.lo) return Tri::Yes;
+    if (la.lo && lb.hi && *la.lo > *lb.hi) return Tri::No;
+    return Tri::Unknown;
+  }
+
+  if (structurallyEqual(a2, b2)) return Tri::Yes;
+  const Interval la = evalInterval(a2);
+  const Interval lb = evalInterval(b2);
+  if (la.hi && lb.lo && *la.hi <= *lb.lo) return Tri::Yes;
+  if (la.lo && lb.hi && *la.lo > *lb.hi) return Tri::No;
+  return Tri::Unknown;
+}
+
 }  // namespace bridgeir::symbolic

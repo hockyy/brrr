@@ -56,6 +56,10 @@ class Solver {
   std::optional<std::pair<int64_t, int64_t>> rangeOf(
       const std::string& var) const;
 
+  // Inequality facts: a <= b (used by scoped invariants).
+  void assertLe(const Expr& a, const Expr& b);
+  Tri lessOrEqual(const Expr& a, const Expr& b) const;
+
   // Apply asserted equalities — used to hand fact-substituted expressions to
   // connectors.
   Expr subst(const Expr& e) const;
@@ -70,6 +74,7 @@ class Solver {
   std::optional<int64_t> residueOf(const Expr& e, int64_t m) const;
 
   std::vector<std::pair<Expr, Expr>> equalities_;
+  std::vector<std::pair<Expr, Expr>> le_facts_;
   std::map<std::string, std::pair<int64_t, int64_t>> ranges_;
   std::vector<std::tuple<std::string, int64_t, int64_t>> mods_;
 };

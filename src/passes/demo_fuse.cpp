@@ -8,7 +8,7 @@ namespace bridgeir {
 void demoInsertReluAfterAdd(Module& m) {
   std::vector<NodeId> rets;
   for (const Node& n : m.nodes) {
-    if (n.kind == "ret") rets.push_back(n.id);
+    if (n.kind == "func.return") rets.push_back(n.id);
   }
 
   for (NodeId rid : rets) {

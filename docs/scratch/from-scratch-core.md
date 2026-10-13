@@ -25,10 +25,11 @@ The question is not "what does a compiler need?" but "what does an agent need?":
 Concept budget target: ~6 primitives; everything else is data.
 
 1. **Node** — the only operation concept:
-   `{id, name, kind, ports, attrs, scope, loc}`. `id` is the stable machine identity
-   (never renumbered); `name` is an optional, human/agent-editable label (unique per
-   scope) whose changes are journaled deltas. `kind` names a schema; ports are ordered
-   operands/results; there is no C++ class per op.
+   `{id, name, kind, ports, attrs, scope, body, loc}`. `id` is the stable machine
+   identity (never renumbered); `name` is an optional, human/agent-editable label
+   (unique per scope) whose changes are journaled deltas. `kind` names a schema;
+   ports are ordered operands/results; there is no C++ class per op. A node may
+   open a braced `body`: modules, funcs, CFG blocks, and loops are scope nodes.
 2. **Edge** — typed relation: `data` (value flow), `scope` (lexical parent),
    `effect` (ordering), `symbol` (name binding — every named node is a binding in
    its scope; late-bound symbol references are `Ref` data, `@mod::@fn`).
@@ -84,13 +85,18 @@ IN (ours, from scratch):
 
 - IR: nodes/edges/ports/types/data; stable IDs + editable names; scope subgraphs;
   use-def lists.
-- Registry: schemas as data (kinds/types/attrs/checks), runtime load, versioned.
+- Registry (v0 implemented): kinds (named ports, results policy, typed attrs,
+  inheritance, traits) and scalar primitives as data; validated on every load.
+- Modules: the top-level unit and symbol root — `module @name(mID) { ... }`;
+  documents without one use the implicit root; fragments compose via `#include`
+  (cycle-checked, `--include=<dir>`).
 - Symbolic layer: unknowns and expressions as data; facts (equality, ranges,
   alignment); tri-state solver queries with explanations.
 - Connectors: external engines (SymPy, SMT, host-language libraries) behind a
   tri-state query protocol; cached, budgeted, attributed — the loose edge of the IR.
 - Formats: canonical line-oriented text — symbols and `fact` lines are part of the
-  document; versioned binary; content hash.
+  document; JSON wire encoding (`to-json`); C-like view (`print --c-like`);
+  versioned binary (planned); content hash.
 - Verifier framework: structural + semantic checks + per-commit invariants.
 - Diagnostics: structured (code, severity, loc, payload), human + JSON.
 - Pass manager: walkers, pipeline-as-data (JSON), budgets/timeouts, checkpoints.
