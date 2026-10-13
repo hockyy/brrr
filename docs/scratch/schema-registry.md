@@ -92,6 +92,31 @@ facts become `assume ...;`, nodes become typed declarations
 and modules read as `namespace`. View-only; the canonical `.br` text remains the
 parse format. A parseable C-like dialect is the candidate third encoding.
 
+## Non-primitive types: one grammar, declared constructors
+
+There is **no per-type parser**. Type expressions are one grammar, and every type
+is a *declared constructor* in the schema (primitives are the nullary case):
+
+```
+scalar f16 { domain: float bits: 16 }          # nullary constructor
+type tensor { params: dtype: scalar, shape: dims* }
+type buf { params: elem: tensor, align: int }
+```
+
+`parseTypeTerm` (`types/type_parse.cpp`) parses any nesting:
+`f16`, `tensor<f16, 64, 128>`, `buf<tensor<f16, 64>, 8>`. Validation is driven by
+the declaration, not by code per type:
+
+- the constructor name must be declared;
+- arity must match the parameter spec (`dims*` is a variadic tail);
+- each argument is checked by its parameter kind — `scalar` → a declared scalar,
+  `dims`/`expr` → an expression, a type name → recurse.
+
+This is the same uniformity as ops (one node parser + kinds as data): one type
+parser + constructors as data. Wiring declarations into attributes and ports
+(so `t: tensor` becomes a checked attr, then port types + unification at joins)
+is the next step.
+
 ## Future
 
 - Versioned schema files with content hashes; documents pin their vocabulary.

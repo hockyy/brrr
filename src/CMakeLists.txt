@@ -19,6 +19,7 @@ add_library(bridgeir_core
   passes/fold_reshape.cpp
   schema/schema.cpp
   types/types.cpp
+  types/type_parse.cpp
   types/infer.cpp
   symbolic/symbolic.cpp
   symbolic/expr_io.cpp

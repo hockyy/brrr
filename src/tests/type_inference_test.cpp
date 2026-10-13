@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "types/infer.h"
+#include "types/type_parse.h"
 
 using bridgeir::types::InferNode;
 using bridgeir::types::Signature;
@@ -114,6 +115,30 @@ int main() {
                r.types[2]->args[1]->kind == TypeTerm::Kind::Var &&
                r.types[2]->args[2]->kind == TypeTerm::Kind::Var,
            "mm: result keeps symbolic dims as variables");
+  }
+
+  // 6. One type grammar for every declared type — no per-type parsers.
+  {
+    std::string err;
+    TypeRef t;
+    expect(parseTypeTerm("tensor<f16, 64, 128>", &t, &err),
+           "parseTypeTerm: tensor with args");
+    const bridgeir::types::Unifier u;
+    expect(t && u.pretty(t) == "tensor<f16, 64, 128>",
+           "parseTypeTerm: pretty round-trip");
+    TypeRef nested;
+    expect(parseTypeTerm("buf<tensor<f16, 64>, 8>", &nested, &err),
+           "parseTypeTerm: nested constructors");
+    expect(nested && u.pretty(nested) == "buf<tensor<f16, 64>, 8>",
+           "parseTypeTerm: nested pretty round-trip");
+    TypeRef scalar;
+    expect(parseTypeTerm("f16", &scalar, &err),
+           "parseTypeTerm: nullary (primitive) type");
+    TypeRef bad;
+    expect(!parseTypeTerm("tensor<f16,", &bad, &err),
+           "parseTypeTerm: malformed rejected");
+    expect(!parseTypeTerm("tensor<f16, 64", &bad, &err),
+           "parseTypeTerm: missing '>' rejected");
   }
 
   if (failures == 0) std::printf("\nall type-inference tests passed\n");

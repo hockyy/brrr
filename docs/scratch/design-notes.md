@@ -305,6 +305,13 @@ into (backends, frontends) via adapters.
   id/name. Honest limit: conditions/steps are SSA value names, not expressions —
   expression/assignment lowering = SSA construction, the next frontend level.
   Examples `loop_cpp.br`, `branch_cpp.br`; negatives `bad_for.br`, `bad_if.br`.
+- 2026-10-13: type terms get their single parser (`types/type_parse.cpp`):
+  one grammar (`name`, `name<arg,...>`, nested) for every declared type — no
+  per-type parsers; declarations (`type tensor { params: dtype: scalar, shape:
+  dims* }`) drive validation. Also fixed an enforcement hole the `>=` fact exposed:
+  the expression lexer returned `End` instead of `Bad`, silently truncating
+  `fact a >= b` to `a == b`; unknown operators now fail loudly and `>=`/`<=` are
+  real inequalities.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
