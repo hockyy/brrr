@@ -357,6 +357,24 @@ into (backends, frontends) via adapters.
   vocabulary in a `.br` is now a clear error ("cannot be declared in a document;
   define it in a module and `import` it"); test `bad_vocab.br`. Types therefore
   arrive via `lib/types.bs` (struct-like records) alongside kinds.
+- 2026-10-13: primitives refined into **families**, split into two kinds:
+  (a) *element primitives* (declared, `lib/types.bs`): `bool`; `int{N}` /
+  `uint{N}` (two's complement, N >= 2; the module may declare the supported width
+  set); `float{bits, exp, mant}` — one parameterized family covering IEEE and
+  bfloat/MX variants (float16 = 16/5/10, bfloat16 = 16/8/7, float32 = 32/8/23,
+  float64 = 64/11/52, float8_e4m3 = 8/4/3, float8_e5m2 = 8/5/2) with the familiar
+  spellings as module-declared names; `index` (word-sized, extents/offsets);
+  (the `bool` domain is kept deliberately, not folded into `uint{1}`: predicate
+  positions — `cbr`, `select`, `loop.yield` — must not accept arbitrary 1-bit
+  integers; the distinction C++/Rust keep and LLVM/MLIR trade away with `i1`).
+  Not primitives by design, they are *records*: tensor, ptr, complex, quant(elem,
+  scale), resource/handle — and `token` too, as an empty record (`type token { }`)
+  rather than a domain. No `void` — the results policy covers it.
+  (b) *data (term) primitives* (metalanguage, not declared): arbitrary-precision
+  `int`, wide `float`, `bool`, `string` (UTF-8), `bytes`, `symbol`/identifier,
+  `ref` (stable id), `list`, `map`, `null`. Rationale: attribute payloads must not
+  be bounded by element widths (a 128-bit mask literal is an attr `int`), and big
+  payloads belong in side tables, not attrs.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
