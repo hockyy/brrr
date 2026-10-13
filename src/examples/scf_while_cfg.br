@@ -1,0 +1,53 @@
+# CFG lowering of MLIR's two-region scf.while:
+#
+#   %res = scf.while (%arg0 = %init) : (T) -> (T) {
+#     %cond = arith.cmpi slt, %arg0, %bound : T
+#     scf.condition(%cond) %arg0 : T
+#   } do {
+#     %next = arith.addi %arg0, %step : T
+#     scf.yield %next : T
+#   }
+#
+# The two regions become a three-block cycle. What makes it work:
+#   * `before` is the loop header; its block parameter IS `%arg0` (the iter_arg).
+#   * `scf.condition(%cond) %arg0` becomes one `cbr` with two outgoing edges,
+#     both carrying %arg0 -- true -> body, false -> exit.
+#   * `scf.yield %next` (in the 'after' region) is NOT a result yield: it is the
+#     BACK EDGE `br before(next)`. That single edge is the whole loop.
+#   * the while's result is whatever the false edge carried out (no phi needed).
+#
+# Same arity invariant as the structured `loop` kind: back-edge payload (next)
+# == before's block arguments (arg0) == forward-edge payloads (arg0). No phi.
+#
+#   bridgeir print src/examples/scf_while_cfg.br
+#   bridgeir check src/examples/scf_while_cfg.br      -> errors: 0
+func @scf_while_cfg(n1) {
+  n2 init = param idx=0 type="i64"
+  n3 bound = param idx=1 type="i64"
+  n4 step = param idx=2 type="i64"
+
+  n5 entry = block {
+    n6 e_pre = edge before init            # cf.br ^before(%init)
+    n7 = br e_pre
+  }
+
+  n8 before = block {                      # the 'before' region
+    n9 arg0 = param idx=0                  # %arg0 = iter_arg, lives around the cycle
+    n10 cond = icmp arg0 bound pred="slt"
+    n11 e_after = edge after arg0          # cond true  -> enter 'after'
+    n12 e_exit = edge exit arg0            # cond false -> leave, yielding %arg0
+    n13 = cbr cond n11 n12
+  }
+
+  n14 after = block {                      # the 'after' region
+    n15 arg0b = param idx=0
+    n16 next = arith.addi arg0b step
+    n17 e_back = edge before next          # scf.yield %next  ==  back edge
+    n18 = br e_back
+  }
+
+  n19 exit = block {
+    n20 res = param idx=0                  # the while's result
+    n21 = func.return res
+  }
+}

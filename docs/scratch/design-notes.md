@@ -549,6 +549,23 @@ into (backends, frontends) via adapters.
   `for (x = init; cond)` with the assigned names hoisted into the header by the
   preprocessor. Net: three surface keywords become two, and the two-bit mode
   becomes one bit.
+- 2026-10-13: **recorded + verified (implemented)** — `scf.while` → `br`/`cbr`
+  lowering in the canonical block-argument form, worked end to end in
+  `src/examples/scf_while_cfg.br` (`check`: 0 errors / 0 warnings; round-trip ids
+  stable; guarded by the suite). Mapping: the `before` region becomes the loop
+  header block whose **block argument is the iter_arg**; `scf.condition(%cond)
+  %arg0` becomes **one `cbr` with two outgoing edges, both carrying `%arg0`** (true
+  → `after`, false → `exit`); `scf.yield %next` in the `after` region is not a
+  result yield but the **back edge** `br before(next)`; and the while's result is
+  simply whatever the false edge carried. No `phi`: block arguments are canonical
+  and edges deliver them. The invariant is the loop invariant (back-edge payload ==
+  header args == forward-edge payloads), and both halves are enforced — verified by
+  deliberate breakage: `passes 2 value(s) to block 'before' which takes 1
+  parameter(s)` and `operand n16 ... is in block 'after' which does not dominate
+  this use`. Consequence for coupling: our structured `loop` kind *is* `scf.while`
+  with the two regions fused and `cond_pos` deciding where the test sits, so a
+  `scf.while` can be imported either structured or as this cycle — the cycle is the
+  semantics, the structured form is the optimization surface.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

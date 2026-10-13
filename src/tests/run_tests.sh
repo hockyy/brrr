@@ -449,6 +449,15 @@ else
   echo "FAIL: phi crossings rejected"
   fail=1
 fi
+# scf.while lowered to CFG: the two-region form becomes a three-block cycle in the
+# canonical block-argument form (no phi); the edge/argument arity invariant holds.
+if "$BIN" roundtrip "$EXAMPLES/scf_while_cfg.br" >/dev/null 2>&1 \
+   && "$BIN" check "$EXAMPLES/scf_while_cfg.br" 2>/dev/null | grep -q "errors: 0, warnings: 0"; then
+  echo "ok: scf.while -> CFG cycle (block-argument form)"
+else
+  echo "FAIL: scf.while -> CFG cycle"
+  fail=1
+fi
 
 # Showcase tour: every file round-trips and validates cleanly.
 SHOWCASE="$(cd "$CASES/../../showcase" && pwd)"
