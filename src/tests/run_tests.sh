@@ -262,9 +262,10 @@ else
 fi
 cfg_out="$("$BIN" print "$EXAMPLES/loop_cfg.br" 2>/dev/null)"
 if echo "$cfg_out" | grep -q "n5 entry = block {" &&
-   echo "$cfg_out" | grep -q "n7 = cbr has body exit" &&
-   echo "$cfg_out" | grep -q "n9 acc = phi"; then
-  echo "ok: branches and the CFG loop print with nested blocks"
+   echo "$cfg_out" | grep -q "e_body = edge body zero n_val" &&
+   echo "$cfg_out" | grep -q "n11 acc = param idx=0" &&
+   echo "$cfg_out" | grep -q "n9 = cbr has e_body e_exit"; then
+  echo "ok: block-argument loop prints (edges carry passed values)"
 else
   echo "FAIL: control-flow printing"
   echo "$cfg_out" | head -10
@@ -300,6 +301,14 @@ else
   echo "FAIL: module-ness of control vocabulary"
   echo "$core_only_out" | head -6
   fail=1
+fi
+
+# Block arguments: edges must match the target block's parameters.
+if "$BIN" check "$CASES/bad_edge.br" >/dev/null 2>&1; then
+  echo "FAIL: edge arity violation accepted"
+  fail=1
+else
+  echo "ok: edge arity violation rejected"
 fi
 
 exit $fail

@@ -320,6 +320,7 @@ kind func {
 kind param {
   operands: none
   results: value
+  traits: arg
 }
 
 kind func.return {
@@ -369,6 +370,13 @@ std::string controlSchemaText() {
 kind block {
   operands: none
   results: value
+  traits: block
+}
+
+kind edge {
+  operands: target, passed*
+  results: value
+  traits: edge
 }
 
 kind br {
@@ -379,6 +387,11 @@ kind br {
 kind cbr {
   operands: cond, if_true, if_false
   results: none
+}
+
+kind select {
+  operands: cond, if_true, if_false
+  results: value
 }
 
 kind phi {

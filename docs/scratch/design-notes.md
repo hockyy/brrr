@@ -267,6 +267,17 @@ into (backends, frontends) via adapters.
   scopes. Rule: names are scope-local, stable ids are global — cross-block values
   use ids by design. Structured regions land on the same mechanism (region args +
   multi-port results outstanding).
+- 2026-10-13: block arguments adopted as the canonical CFG form (phi keeps
+  LLVM-fidelity imports): blocks take `param` args, branch delivery via `edge
+  target passed*`, arity enforced schema-side through traits (`block`/`edge`/`arg`);
+  `loop_cfg.br` rewritten to block-argument form (no cross-block ids anywhere);
+  `bad_edge.br` covers the violation. Rationale: pass ergonomics, edge-site
+  parallel-copy semantics (no lost-copy ambiguity), unified argument concept.
+- 2026-10-13: steelman + alternatives recorded (`ssa-joins.md`): phi wins on
+  IR-minimality, def-side analysis ergonomics, mechanical construction, and LLVM
+  interop; block args win on human/agent ergonomics; the difference is where the
+  parallel copy lives. Added `select` (predication route) to the control module.
+  Conversions are vocabulary-level (`phi → args` normalization pass is next).
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

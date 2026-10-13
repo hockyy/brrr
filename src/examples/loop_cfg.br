@@ -1,5 +1,6 @@
-# CFG branches and loops: any node opened with `{` is a scope; br/cbr/phi are
-# declared kinds. Names are scope-local; cross-block values use stable ids.
+# CFG branches and loops in BLOCK-ARGUMENT form: blocks take parameters, and the
+# branch site says what it passes ("edge" values). What is looped back is visible
+# at the edge, not buried in phi pairs — and no cross-block ids are needed.
 func @sum_to_n(n1) {
   n2 n_val = param idx=0 type="i64"
   n3 zero = arith.constant type="i64" value="0"
@@ -7,22 +8,26 @@ func @sum_to_n(n1) {
 
   n5 entry = block {
     n6 has = icmp n_val zero pred="gt"
-    n7 = cbr has body exit
+    n7 e_body = edge body zero n_val      # what is "passed in"
+    n8 e_exit = edge exit zero
+    n9 = cbr has e_body e_exit
   }
 
-  n8 body = block {
+  n10 body = block {
+    n11 acc = param idx=0                 # block-local names, no cross-block ids
+    n12 i = param idx=1
     fact 0 <= i
     fact i <= n_val
-    n9 acc = phi zero entry new_acc body
-    n10 i = phi n_val entry next_i body
-    n11 next_i = arith.addi i neg_one
-    n12 new_acc = arith.addi acc i
-    n13 more = icmp next_i zero pred="gt"
-    n14 = cbr more body exit
+    n13 next_i = arith.addi i neg_one
+    n14 new_acc = arith.addi acc i
+    n15 more = icmp next_i zero pred="gt"
+    n16 e_again = edge body new_acc next_i  # what is "looped back"
+    n17 e_done = edge exit new_acc
+    n18 = cbr more e_again e_done
   }
 
-  n15 exit = block {
-    n16 res = phi zero entry n12 body
-    n17 = func.return res
+  n19 exit = block {
+    n20 res = param idx=0                  # what is live after the loop
+    n21 = func.return res
   }
 }

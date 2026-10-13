@@ -142,6 +142,46 @@ std::vector<Issue> checkModule(const Module& m, const schema::Registry& reg) {
     }
   }
 
+  // Edge arity, schema-driven by traits: an edge's passed values must match the
+  // number of parameters of its target block (traits `edge` / `block` / `arg`).
+  auto has_trait = [&](const schema::Kind* k, const char* t) {
+    if (!k) return false;
+    for (const std::string& x : k->traits) {
+      if (x == t) return true;
+    }
+    return false;
+  };
+  for (const Node& n : m.nodes) {
+    const schema::Kind* k = reg.find(n.kind);
+    if (!has_trait(k, "edge")) continue;
+    if (n.operands.empty()) {
+      out.push_back({true, n.id, n.kind, "edge needs a target block operand"});
+      continue;
+    }
+    const Node* target = m.find(n.operands[0].id);
+    if (!target) continue;
+    if (!has_trait(reg.find(target->kind), "block")) {
+      out.push_back({true, n.id, n.kind,
+                     "target n" + std::to_string(target->id) + " ('" +
+                         target->kind + "') is not a block"});
+      continue;
+    }
+    size_t params = 0;
+    for (const Node& c : m.nodes) {
+      if (c.scope == target->id && has_trait(reg.find(c.kind), "arg")) ++params;
+    }
+    const size_t passed = n.operands.size() - 1;
+    if (passed != params) {
+      const std::string label = target->name.empty()
+                                    ? ("n" + std::to_string(target->id))
+                                    : target->name;
+      out.push_back({true, n.id, n.kind,
+                     "passes " + std::to_string(passed) +
+                         " value(s) to block '" + label + "' which takes " +
+                         std::to_string(params) + " parameter(s)"});
+    }
+  }
+
   // Foreign vocabulary: reported once per kind, as a warning.
   std::map<std::string, NodeId> unknown;
   for (const Node& n : m.nodes) {

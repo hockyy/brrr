@@ -56,6 +56,39 @@ Complete, lowering-faithful, and already round-trip-tested:
 `examples/loop_cfg.br` (canonical form) and `examples/dot_llvm.br` (a real
 `clang -O1` loop mapped nearly one-to-one).
 
+## Block arguments vs phi nodes (both declared; block args are canonical)
+
+| | phi nodes (LLVM) | block arguments (MLIR, SIL, BridgeIR) |
+|---|---|---|
+| placement | grouped at block top; every pass special-cases them | parameters of the block — uniform iteration |
+| semantics | parallel copy at *block entry*, entangled with ordering (the "lost copy"/swap bugs of SSA destruction) | parallel copy at the *edge*: the branch site states what it passes |
+| function inputs | separate Argument concept | unified: function inputs and block inputs are both `param` nodes |
+| cross-block refs | needed (defs live in other blocks) | none: parameters are block-local names |
+
+BridgeIR form: an `edge` node carries `(target, passed...)`; `br`/`cbr` consume
+edge values; blocks declare `param idx=N` arguments. Arity is checked by the
+schema via traits (`block`/`edge`/`arg`): edge passed-values must equal the target
+block's parameter count — violations are rejected (`tests/cases/bad_edge.br`).
+
+```
+n5 entry = block {
+  n6 has = icmp n_val zero pred="gt"
+  n7 e_body = edge body zero n_val        # what is "passed in"
+  n8 e_exit = edge exit zero
+  n9 = cbr has e_body e_exit
+}
+n10 body = block {
+  n11 acc = param idx=0                    # block-local; no cross-block ids
+  n12 i = param idx=1
+  ...
+  n16 e_again = edge body new_acc next_i   # what is "looped back"
+  ...
+}
+```
+
+`phi` remains declared for LLVM-fidelity imports (clang output maps 1:1 onto it);
+a phi→args normalization pass is the natural next step.
+
 ## Structured regions (future, reserved now)
 
 The same scope mechanism will carry MLIR-style structured control without new
