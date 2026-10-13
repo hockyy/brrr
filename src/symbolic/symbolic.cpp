@@ -194,6 +194,13 @@ void Solver::assertMod(const std::string& var, int64_t modulus,
   mods_.emplace_back(var, modulus, residue);
 }
 
+std::optional<std::pair<int64_t, int64_t>> Solver::rangeOf(
+    const std::string& var) const {
+  auto it = ranges_.find(var);
+  if (it == ranges_.end()) return std::nullopt;
+  return it->second;
+}
+
 std::map<std::string, Expr> Solver::substMap() const {
   std::map<std::string, Expr> m;
   for (const auto& [a, b] : equalities_) {

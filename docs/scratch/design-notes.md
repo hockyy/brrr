@@ -228,6 +228,11 @@ into (backends, frontends) via adapters.
   `getStaticTotalMult`, `areLooseReassociationsCompatible` duplicated across 4
   passes). With facts, its decision = `isEqual` + `aligned` queries; Unknown maps to
   a runtime guard instead of an assumption.
+- 2026-10-13: symbols/facts promoted to **first-hand language features**: `fact`
+  lines in `.br` documents (equality / aligned / range), expression parser,
+  consistency checks at apply time; `bridgeir facts` + `bridgeir fold-reshape`
+  demo passes reading facts straight from the IR text. (User's point: the ability
+  must be native to the language, not a bolted-on library.)
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

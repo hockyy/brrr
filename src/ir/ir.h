@@ -72,6 +72,7 @@ class Module {
   std::vector<Node> nodes;        // program order
   std::vector<NodeId> top_level;  // functions and scope-less nodes, in order
   std::vector<JournalEntry> journal;
+  std::vector<std::string> facts;  // raw `fact ...` lines from the document
 
   // Stable-id allocator: strictly monotonic — never renumbers, never reuses.
   NodeId allocId();

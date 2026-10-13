@@ -1,0 +1,11 @@
+# First-hand symbols: facts are part of the IR document.
+fact src_size = 512
+fact dst_size = 512
+fact aligned(dst_size, 16)
+
+func @reshape_chain(n1) {
+  n2 x = load dtype="f16" shape="src_size"
+  n3 r1 = reshape x in="src_size" out="mid"
+  n4 r2 = reshape r1 in="mid" out="dst_size"
+  n5 = func.return r2
+}

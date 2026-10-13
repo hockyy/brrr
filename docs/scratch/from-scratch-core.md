@@ -89,7 +89,8 @@ IN (ours, from scratch):
   alignment); tri-state solver queries with explanations.
 - Connectors: external engines (SymPy, SMT, host-language libraries) behind a
   tri-state query protocol; cached, budgeted, attributed — the loose edge of the IR.
-- Formats: canonical line-oriented text; versioned binary; content hash.
+- Formats: canonical line-oriented text — symbols and `fact` lines are part of the
+  document; versioned binary; content hash.
 - Verifier framework: structural + semantic checks + per-commit invariants.
 - Diagnostics: structured (code, severity, loc, payload), human + JSON.
 - Pass manager: walkers, pipeline-as-data (JSON), budgets/timeouts, checkpoints.

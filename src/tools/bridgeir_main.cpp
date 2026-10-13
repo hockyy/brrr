@@ -6,6 +6,9 @@
 #include "ir/ir.h"
 #include "ir/text.h"
 #include "passes/demo_fuse.h"
+#include "passes/fold_reshape.h"
+#include "symbolic/facts.h"
+#include "symbolic/symbolic.h"
 
 namespace {
 
@@ -24,10 +27,14 @@ std::string readFile(const std::string& path, bool* ok, std::string* err) {
 
 int usage() {
   std::cerr << "usage: bridgeir <command> <file.br> [args]\n"
-               "  print      parse and print canonical text (stable ids + names)\n"
-               "  roundtrip  parse -> print -> parse -> print; verify stability\n"
-               "  demo       run the demo transform; print result + journal\n"
-               "  rename     rename a node: rename <file> <nID|name> <newname|->\n";
+               "  print         parse and print canonical text (stable ids + names)\n"
+               "  roundtrip     parse -> print -> parse -> print; verify stability\n"
+               "  demo          run the demo transform; print result + journal\n"
+               "  rename        rename a node: rename <file> <nID|name> <newname|->\n"
+               "  facts         apply and validate `fact` lines from the document\n"
+               "  fold-reshape  FoldReshape-style decision from facts (first-hand)\n"
+               "\n"
+               "Every load validates the document's facts (part of the language).\n";
   return 64;
 }
 
@@ -36,6 +43,19 @@ void printJournal(const bridgeir::Module& m) {
     std::cerr << "[journal] " << e.action << " n" << e.id << ": " << e.detail
               << "\n";
   }
+}
+
+// Facts are part of the language: building the store is consistency checking.
+bool applyDocumentFacts(const bridgeir::Module& m, bridgeir::symbolic::Solver* s,
+                        const std::string& path) {
+  std::string err;
+  for (const std::string& line : m.facts) {
+    if (!bridgeir::symbolic::applyFact(line, *s, &err)) {
+      std::cerr << path << ": error: " << err << "\n";
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -58,6 +78,11 @@ int main(int argc, char** argv) {
     std::cerr << path << ":" << pr.line << ": error: " << pr.error << "\n";
     return 1;
   }
+
+  // Language-level validation: a document with contradictory facts is ill-formed
+  // for every command, not just the ones that run passes.
+  bridgeir::symbolic::Solver facts;
+  if (!applyDocumentFacts(pr.module, &facts, path)) return 1;
 
   if (cmd == "print") {
     std::cout << bridgeir::printModule(pr.module);
@@ -119,6 +144,21 @@ int main(int argc, char** argv) {
       std::cerr << "error: " << rerr << "\n";
       return 1;
     }
+    std::cout << bridgeir::printModule(pr.module);
+    printJournal(pr.module);
+    return 0;
+  }
+
+  if (cmd == "facts") {
+    for (const std::string& line : pr.module.facts) {
+      std::cout << "ok: " << line << "\n";
+    }
+    std::cerr << pr.module.facts.size() << " facts, all consistent\n";
+    return 0;
+  }
+
+  if (cmd == "fold-reshape") {
+    bridgeir::foldLooseReshapePairs(pr.module, facts);
     std::cout << bridgeir::printModule(pr.module);
     printJournal(pr.module);
     return 0;

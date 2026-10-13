@@ -53,6 +53,8 @@ class Solver {
   Tri aligned(const Expr& e, int64_t modulus) const;
   std::pair<std::optional<int64_t>, std::optional<int64_t>> bounds(
       const Expr& e) const;
+  std::optional<std::pair<int64_t, int64_t>> rangeOf(
+      const std::string& var) const;
 
   // Apply asserted equalities — used to hand fact-substituted expressions to
   // connectors.

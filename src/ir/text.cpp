@@ -140,6 +140,9 @@ bool parseAttrValue(const std::string& tok, AttrValue* out) {
 std::string printModule(const Module& m) {
   std::string out = "# bridgeir v0\n";
 
+  // Facts are part of the document and round-trip verbatim.
+  for (const std::string& f : m.facts) out += f + "\n";
+
   // Resolve a name from a scope: scope first, then module level.
   auto resolveName = [&](NodeId from_scope, const std::string& nm) -> const Node* {
     const Node* global = nullptr;
@@ -233,6 +236,15 @@ ParseResult parseModule(const std::string& text) {
 
     const std::vector<std::string> tok = tokenize(line);
     if (tok.empty()) continue;
+
+    // Facts are part of the document; kept raw here (the symbolic layer parses
+    // them, and ir/ does not depend on it).
+    if (tok[0] == "fact") {
+      const size_t b = line.find_first_not_of(" \t");
+      const size_t e = line.find_last_not_of(" \t");
+      res.module.facts.push_back(line.substr(b, e - b + 1));
+      continue;
+    }
 
     if (tok.size() == 1 && tok[0] == "}") {
       if (scope_stack.empty()) { fail("unmatched '}'"); break; }

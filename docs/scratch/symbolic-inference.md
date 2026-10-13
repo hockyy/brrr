@@ -135,10 +135,26 @@ cached by content, and attributed. First connector implemented: SymPy
 (`src/connectors/`, `ctest -R connector`). Design:
 [`connectors.md`](connectors.md).
 
+## First-hand in the language (implemented)
+
+Symbols and facts are **part of the IR document**, not library calls:
+
+- `.br` text accepts `fact N = 512`, `fact aligned(dst_size, 16)`,
+  `fact range(i, 0, 1023)`; expressions support `+`, `*`, parentheses, symbols.
+- Facts are consistency-checked as they are applied — a fact contradicting the
+  store is a hard error (`fact N = 12` + `fact aligned(N, 16)` → rejected).
+- `bridgeir facts <file>` validates and prints the store; `bridgeir fold-reshape
+  <file>` runs the FoldReshape-style decision straight from the document: one
+  `isEqual` + one `aligned` query per reshape pair (`Yes → compose` with a fused
+  node and journaled retargets; `No → keep`; `Unknown → skip`).
+- Round-trip preserves facts, so the canon stays idempotent.
+
+This was the user's point: the ability must be native to the *language*, not a
+bolted-on library.
+
 ## Next steps
 
-1. Facts in the text format (`fact ...` lines) and a `bridgeir decide`/pass CLI demo.
-2. Schema-driven fact generation (`split`, `mm`, `pad`, `reshape` rules as data).
-3. Justifications on local answers (`Yes because: N ≡ 0 (mod 16), 32 ≡ 0 (mod 16)`).
-4. More connectors (Z3/SMT, host-language reference evaluators) behind the same
-   tri-state API; capability manifests; answer checking.
+1. Schema-driven fact generation (`split`, `mm`, `pad`, `reshape` rules as data).
+2. Justifications on local answers (`Yes because: N ≡ 0 (mod 16), 32 ≡ 0 (mod 16)`).
+3. More connectors (Z3/SMT, host-language reference evaluators); capability
+   manifests; answer checking; `sym` declarations with per-scope facts.

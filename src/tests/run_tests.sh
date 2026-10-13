@@ -92,4 +92,34 @@ for ex in "$EXAMPLES"/*.br; do
   fi
 done
 
+# First-hand symbols: facts live in the IR document.
+if "$BIN" facts "$EXAMPLES/reshape_facts.br" >/dev/null 2>&1; then
+  echo "ok: facts apply cleanly from the document"
+else
+  echo "FAIL: facts apply cleanly from the document"
+  fail=1
+fi
+
+fold_out="$("$BIN" fold-reshape "$EXAMPLES/reshape_facts.br" 2>&1)"
+if echo "$fold_out" | grep -q "isEqual(src_size, dst_size) -> Yes" &&
+   echo "$fold_out" | grep -q "aligned(dst_size, 16) -> Yes" &&
+   echo "$fold_out" | grep -q "\[journal\] compose" &&
+   echo "$fold_out" | grep -q "r_fused"; then
+  echo "ok: fold-reshape composes from facts (first-hand queries)"
+else
+  echo "FAIL: fold-reshape composes from facts"
+  echo "$fold_out" | head -8
+  fail=1
+fi
+
+# Contradictory facts make the document ill-formed: every load path rejects them.
+for c in print facts fold-reshape; do
+  if "$BIN" "$c" "$CASES/facts_conflict.br" >/dev/null 2>&1; then
+    echo "FAIL: contradictory facts accepted by '$c'"
+    fail=1
+  else
+    echo "ok: contradictory facts rejected at load ($c)"
+  fi
+done
+
 exit $fail
