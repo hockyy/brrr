@@ -1,9 +1,42 @@
 #include "ir/ir.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 
 namespace bridgeir {
+
+bool parseNodeIdToken(const std::string& tok, NodeId* out) {
+  if (tok.size() < 2 || tok[0] != 'n') return false;
+  for (size_t i = 1; i < tok.size(); ++i) {
+    if (!std::isdigit(static_cast<unsigned char>(tok[i]))) return false;
+  }
+  *out = std::strtoull(tok.c_str() + 1, nullptr, 10);
+  return *out != kInvalidId;
+}
+
+bool isValidNodeName(const std::string& name) {
+  if (name.empty()) return false;
+  if (!(std::isalpha(static_cast<unsigned char>(name[0])) || name[0] == '_')) {
+    return false;
+  }
+  for (char c : name) {
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return false;
+  }
+  // Tokens of the form n<digits> are reserved for machine ids.
+  if (name[0] == 'n' && name.size() > 1) {
+    bool all_digits = true;
+    for (size_t i = 1; i < name.size(); ++i) {
+      if (!std::isdigit(static_cast<unsigned char>(name[i]))) {
+        all_digits = false;
+        break;
+      }
+    }
+    if (all_digits) return false;
+  }
+  return true;
+}
 
 AttrValue AttrValue::fromInt(int64_t v) {
   AttrValue a;
@@ -120,6 +153,34 @@ std::vector<NodeId> Module::childrenOf(NodeId scope) const {
   for (const auto& n : nodes)
     if (n.scope == scope) out.push_back(n.id);
   return out;
+}
+
+bool Module::renameNode(NodeId target, const std::string& new_name,
+                        std::string* err) {
+  Node* n = find(target);
+  if (!n) {
+    if (err) *err = "no such node n" + std::to_string(target);
+    return false;
+  }
+  if (!new_name.empty()) {
+    if (!isValidNodeName(new_name)) {
+      if (err) *err = "invalid name '" + new_name + "'";
+      return false;
+    }
+    for (const Node& other : nodes) {
+      if (other.id != target && other.scope == n->scope &&
+          other.name == new_name) {
+        if (err) *err = "name '" + new_name + "' already used in this scope";
+        return false;
+      }
+    }
+  }
+  const std::string old = n->name;
+  n->name = new_name;
+  log("rename", target,
+      (old.empty() ? std::string("(none)") : old) + " -> " +
+          (new_name.empty() ? std::string("(none)") : new_name));
+  return true;
 }
 
 void Module::log(std::string action, NodeId id, std::string detail) {

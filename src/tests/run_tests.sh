@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BridgeIR core tests: stable identity + canonical text.
+# BridgeIR core tests: stable identity, editable names, canonical text.
 set -u
 
 BIN="${1:?usage: run_tests.sh <bridgeir-binary> <cases-dir>}"
@@ -45,5 +45,51 @@ else
   echo "FAIL: journal records retarget n5"
   fail=1
 fi
+
+# Rename by id: references printed by name follow the rename.
+rename_out="$("$BIN" rename "$CASES/add.canon.br" n4 total 2>/dev/null)"
+if echo "$rename_out" | grep -q "n4 total = add acc bias beta=1.5" &&
+   echo "$rename_out" | grep -q "n5 out = ret total"; then
+  echo "ok: rename by id updates node and references"
+else
+  echo "FAIL: rename by id"
+  fail=1
+fi
+
+# Rename by name works too, and the journal records the history.
+rename_out="$("$BIN" rename "$CASES/add.canon.br" sum subtotal 2>/dev/null)"
+if echo "$rename_out" | grep -q "n4 subtotal = add acc bias beta=1.5"; then
+  echo "ok: rename by name"
+else
+  echo "FAIL: rename by name"
+  fail=1
+fi
+
+if "$BIN" rename "$CASES/add.canon.br" n4 total 2>&1 >/dev/null \
+     | grep -q "rename n4: sum -> total"; then
+  echo "ok: journal records rename history"
+else
+  echo "FAIL: journal records rename history"
+  fail=1
+fi
+
+# Unknown names are rejected.
+if "$BIN" print "$CASES/bad-ref.br" >/dev/null 2>&1; then
+  echo "FAIL: unknown name accepted"
+  fail=1
+else
+  echo "ok: unknown name rejected"
+fi
+
+# Example mappings of external IRs must round-trip.
+EXAMPLES="$(cd "$CASES/../.." && pwd)/examples"
+for ex in "$EXAMPLES"/*.br; do
+  if "$BIN" roundtrip "$ex" >/dev/null 2>&1; then
+    echo "ok: roundtrip example $(basename "$ex")"
+  else
+    echo "FAIL: roundtrip example $ex"
+    fail=1
+  fi
+done
 
 exit $fail

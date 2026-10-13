@@ -1,0 +1,12 @@
+# Mapping of a real torch.fx symbolic_trace graph (torch 2.13):
+#   forward(x, bias): return relu(matmul(x, w) + bias)
+# FX node names become BridgeIR names; callable targets become data.
+func @mlp(n1) {
+  n2 x = placeholder name="x" type="Tensor"
+  n3 bias = placeholder name="bias" type="Tensor"
+  n4 w = get_attr name="w" module="@M.w"
+  n5 mm = call_function target="torch.matmul" x w
+  n6 sum = call_function target="operator.add" mm bias
+  n7 act = call_function target="torch.relu" sum
+  n8 = output act
+}

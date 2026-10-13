@@ -23,11 +23,19 @@ std::string readFile(const std::string& path, bool* ok, std::string* err) {
 }
 
 int usage() {
-  std::cerr << "usage: bridgeir <print|roundtrip|demo> <file.br>\n"
-               "  print      parse and print canonical text (stable ids)\n"
+  std::cerr << "usage: bridgeir <command> <file.br> [args]\n"
+               "  print      parse and print canonical text (stable ids + names)\n"
                "  roundtrip  parse -> print -> parse -> print; verify stability\n"
-               "  demo       run the demo transform; print result + journal\n";
+               "  demo       run the demo transform; print result + journal\n"
+               "  rename     rename a node: rename <file> <nID|name> <newname|->\n";
   return 64;
+}
+
+void printJournal(const bridgeir::Module& m) {
+  for (const bridgeir::JournalEntry& e : m.journal) {
+    std::cerr << "[journal] " << e.action << " n" << e.id << ": " << e.detail
+              << "\n";
+  }
 }
 
 }  // namespace
@@ -77,10 +85,42 @@ int main(int argc, char** argv) {
   if (cmd == "demo") {
     bridgeir::demoInsertReluAfterAdd(pr.module);
     std::cout << bridgeir::printModule(pr.module);
-    for (const bridgeir::JournalEntry& e : pr.module.journal) {
-      std::cerr << "[journal] " << e.action << " n" << e.id << ": " << e.detail
-                << "\n";
+    printJournal(pr.module);
+    return 0;
+  }
+
+  if (cmd == "rename") {
+    if (argc < 5) return usage();
+    const std::string target_str = argv[3];
+    std::string new_name = argv[4];
+    if (new_name == "-") new_name.clear();
+
+    bridgeir::NodeId target = bridgeir::kInvalidId;
+    bridgeir::NodeId as_id = 0;
+    if (bridgeir::parseNodeIdToken(target_str, &as_id)) {
+      target = as_id;
+    } else {
+      int matches = 0;
+      for (const bridgeir::Node& n : pr.module.nodes) {
+        if (n.name == target_str) {
+          target = n.id;
+          ++matches;
+        }
+      }
+      if (matches != 1) {
+        std::cerr << "error: " << (matches == 0 ? "unknown" : "ambiguous")
+                  << " name '" << target_str << "'\n";
+        return 1;
+      }
     }
+
+    std::string rerr;
+    if (!pr.module.renameNode(target, new_name, &rerr)) {
+      std::cerr << "error: " << rerr << "\n";
+      return 1;
+    }
+    std::cout << bridgeir::printModule(pr.module);
+    printJournal(pr.module);
     return 0;
   }
 

@@ -4,6 +4,10 @@
 // Ids are allocated once, are never renumbered, and are preserved exactly by the
 // canonical text printer and parser. Transformations allocate fresh ids for new nodes
 // and never touch existing ones.
+//
+// Dual identity: every node also carries an optional human/agent-editable `name`
+// (unique per scope). Names are the readable layer; ids are the identity layer.
+// Renaming never changes identity, and renames are journaled deltas.
 #pragma once
 
 #include <cstdint>
@@ -15,6 +19,10 @@ namespace bridgeir {
 
 using NodeId = uint64_t;
 inline constexpr NodeId kInvalidId = 0;
+
+// Identifier utilities (shared by text parser and tools).
+bool parseNodeIdToken(const std::string& tok, NodeId* out);
+bool isValidNodeName(const std::string& name);
 
 // A reference to a node's result port (v0: data edges).
 struct ValueRef {
@@ -40,7 +48,8 @@ struct AttrValue {
 };
 
 struct Node {
-  NodeId id = kInvalidId;
+  NodeId id = kInvalidId;   // stable machine identity; never renumbered
+  std::string name;         // optional human/agent-editable label; unique per scope
   std::string kind;
   std::vector<ValueRef> operands;          // data edges
   std::map<std::string, AttrValue> attrs;  // sorted => canonical printing
@@ -53,7 +62,7 @@ struct Node {
 
 // Every mutation records what happened — the provenance journal (v0 sketch).
 struct JournalEntry {
-  std::string action;  // e.g. "insert", "retarget"
+  std::string action;  // e.g. "insert", "retarget", "rename"
   NodeId id = kInvalidId;
   std::string detail;
 };
@@ -79,6 +88,10 @@ class Module {
   Node& appendParsedNode(Node node);
   // Children of a scope, in program order.
   std::vector<NodeId> childrenOf(NodeId scope) const;
+
+  // Rename a node; empty `new_name` clears the name. Journaled. Fails on invalid
+  // names or collisions within the node's scope.
+  bool renameNode(NodeId target, const std::string& new_name, std::string* err);
 
   void log(std::string action, NodeId id, std::string detail);
 

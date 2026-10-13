@@ -1,7 +1,7 @@
-# non-canonical input: comments, irregular spacing, and attr order are normalized
+# non-canonical input: names are optional; ids and names both work as references
 func  @add(n1)  {
-    n2 = param  other=2 idx=0
-    n3 = param idx=1
-    n4 = add n2 n3  beta=1.5e0
-    n5 = ret n4   # trailing comment
+    n2 acc = param  other=2 idx=0
+    n3 bias = param idx=1
+    n4 sum = add acc bias  beta=1.5e0
+    n5 out = ret n4   # trailing comment; n4 referenced by id here
 }

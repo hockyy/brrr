@@ -177,6 +177,8 @@ into (backends, frontends) via adapters.
   latency under generation. Baselines: MLIR/`mlir-opt` workflows vs BridgeIR.
 - Core concepts: lock scope model (flat + scope edges vs nested groups), text syntax,
   selector grammar. See `from-scratch-core.md` §Open decisions.
+- Core gaps demanded by external-IR mapping (named port groups, blocks/args/yields,
+  ref-valued attrs, effect edges): see `external-ir-mapping.md` §6.
 - Core language: C++20 (assumed; matches ecosystem, fast builds) vs Rust.
 - v0 self-specialization scope: S1–S3 per compile, S4 cached? (proposed)
 - Compile-latency budget + fallback policy per stage? (proposed: hard ceiling)
@@ -205,6 +207,9 @@ into (backends, frontends) via adapters.
 - 2026-10-13: agent-first core vocabulary drafted (nodes/edges/types/data/schemas/
   deltas; selector + template rewrites; transactions). Concepts ours, not MLIR-shaped.
   Spec: `from-scratch-core.md`.
+- 2026-10-13: dual identity adopted: stable machine ids (never renumbered) +
+  human/agent-editable node names (unique per scope; renames journaled). Prototype:
+  `bridgeir rename`, name-aware references and printing.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

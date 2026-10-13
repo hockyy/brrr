@@ -12,8 +12,9 @@ agents.
 The question is not "what does a compiler need?" but "what does an agent need?":
 
 - **Learnability** — few concepts, regular shapes, cheap to read in tokens.
-- **Addressability** — stable identities, so nodes can be referenced across steps and
-  diffs stay clean (MLIR renumbers SSA values on every pass — hostile to agents).
+- **Addressability** — stable machine identities (ids never renumber) plus editable
+  human/agent names (unique per scope, renames journaled); references survive steps
+  and diffs stay clean (MLIR renumbers SSA values on every pass — hostile to agents).
 - **Explainability** — provenance ("what changed, why, by which rule") is first-class.
 - **Reversibility** — transactional edits with rollback; agents get try/undo for free.
 - **Queryability** — one uniform way to find, inspect, and rewrite; no per-op APIs.
@@ -23,8 +24,11 @@ The question is not "what does a compiler need?" but "what does an agent need?":
 
 Concept budget target: ~6 primitives; everything else is data.
 
-1. **Node** — the only operation concept: `{id, kind, ports, attrs, scope, loc}`.
-   `kind` names a schema; ports are ordered operands/results; no C++ class per op.
+1. **Node** — the only operation concept:
+   `{id, name, kind, ports, attrs, scope, loc}`. `id` is the stable machine identity
+   (never renumbered); `name` is an optional, human/agent-editable label (unique per
+   scope) whose changes are journaled deltas. `kind` names a schema; ports are ordered
+   operands/results; there is no C++ class per op.
 2. **Edge** — typed relation: `data` (value flow), `scope` (lexical parent),
    `effect` (ordering), `symbol` (name binding). Structure is explicit, not nested.
 3. **Type** — a data term `{name, args}` (recursive), not a class hierarchy.
@@ -43,13 +47,18 @@ classes needed for the common case; compiled plugins are an opt-in tier.
 Sketch (concrete syntax TBD; shown only to feel the compactness):
 
 ```
-fn @matmul(a: f16<[M,K]>, b: f16<[K,N]>) -> f16<[M,N]>
-  n13 load  a         scope=@matmul
-  n14 load  b         scope=@matmul
-  n15 mm    n13 n14   acc=f32<[M,N]>  scope=@matmul
-  n16 relu  n15       scope=@matmul
-  n17 ret   n16       scope=@matmul
+func @matmul(n1) {
+  n13 a_tile = load a
+  n14 b_tile = load b
+  n15 acc = mm a_tile b_tile type=f32<[M,N]>
+  n16 act = relu acc
+  n17 = ret act
+}
 ```
+
+Ids are forever; names are free. Renaming `acc` to `partial_sum` rewrites nothing
+except the label — references follow because they resolve by name — and the journal
+records `acc -> partial_sum`.
 
 ## What we keep from compiler tradition (don't relearn)
 
@@ -70,7 +79,8 @@ provenance, transactions), not the semantics of SSA.
 
 IN (ours, from scratch):
 
-- IR: nodes/edges/ports/types/data; stable IDs; scope subgraphs; use-def lists.
+- IR: nodes/edges/ports/types/data; stable IDs + editable names; scope subgraphs;
+  use-def lists.
 - Registry: schemas as data (kinds/types/attrs/checks), runtime load, versioned.
 - Formats: canonical line-oriented text; versioned binary; content hash.
 - Verifier framework: structural + semantic checks + per-commit invariants.

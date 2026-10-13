@@ -46,16 +46,8 @@ std::vector<std::string> tokenize(const std::string& line) {
   return out;
 }
 
-bool parseNodeIdToken(const std::string& tok, NodeId* out) {
-  if (tok.size() < 2 || tok[0] != 'n') return false;
-  for (size_t i = 1; i < tok.size(); ++i) {
-    if (!std::isdigit(static_cast<unsigned char>(tok[i]))) return false;
-  }
-  *out = std::strtoull(tok.c_str() + 1, nullptr, 10);
-  return *out != kInvalidId;
-}
-
-bool parseValueRef(const std::string& tok, ValueRef* out) {
+// `nID[.port]` reference form.
+bool parseIdRef(const std::string& tok, ValueRef* out) {
   const size_t dot = tok.find('.');
   const std::string id_part = dot == std::string::npos ? tok : tok.substr(0, dot);
   NodeId id;
@@ -69,6 +61,23 @@ bool parseValueRef(const std::string& tok, ValueRef* out) {
       if (!std::isdigit(static_cast<unsigned char>(c))) return false;
     }
     out->port = static_cast<uint32_t>(std::strtoul(p.c_str(), nullptr, 10));
+  }
+  return true;
+}
+
+// `name[.port]` reference form.
+bool parseNameRef(const std::string& tok, std::string* base, uint32_t* port) {
+  const size_t dot = tok.find('.');
+  *base = dot == std::string::npos ? tok : tok.substr(0, dot);
+  *port = 0;
+  if (!isValidNodeName(*base)) return false;
+  if (dot != std::string::npos) {
+    const std::string p = tok.substr(dot + 1);
+    if (p.empty()) return false;
+    for (char c : p) {
+      if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    }
+    *port = static_cast<uint32_t>(std::strtoul(p.c_str(), nullptr, 10));
   }
   return true;
 }
@@ -130,15 +139,40 @@ bool parseAttrValue(const std::string& tok, AttrValue* out) {
 
 std::string printModule(const Module& m) {
   std::string out = "# bridgeir v0\n";
-  auto printNodeLine = [&](const Node& n, const std::string& indent) {
-    out += indent + "n" + std::to_string(n.id) + " = " + n.kind;
-    for (const ValueRef& vr : n.operands) {
-      out += " n" + std::to_string(vr.id);
-      if (vr.port != 0) out += "." + std::to_string(vr.port);
+
+  // Resolve a name from a scope: scope first, then module level.
+  auto resolveName = [&](NodeId from_scope, const std::string& nm) -> const Node* {
+    const Node* global = nullptr;
+    for (const Node& n : m.nodes) {
+      if (n.name != nm) continue;
+      if (n.scope == from_scope) return &n;
+      if (n.scope == kInvalidId) global = &n;
     }
+    return global;
+  };
+
+  // Prefer the target's name when it resolves back to the same node; otherwise id.
+  auto refString = [&](const Node& from, const ValueRef& vr) {
+    const Node* t = m.find(vr.id);
+    std::string ref;
+    if (t && !t->name.empty()) {
+      const Node* r = resolveName(from.scope, t->name);
+      if (r && r->id == vr.id) ref = t->name;
+    }
+    if (ref.empty()) ref = "n" + std::to_string(vr.id);
+    if (vr.port != 0) ref += "." + std::to_string(vr.port);
+    return ref;
+  };
+
+  auto printNodeLine = [&](const Node& n, const std::string& indent) {
+    out += indent + "n" + std::to_string(n.id);
+    if (!n.name.empty()) out += " " + n.name;
+    out += " = " + n.kind;
+    for (const ValueRef& vr : n.operands) out += " " + refString(n, vr);
     for (const auto& [k, v] : n.attrs) out += " " + k + "=" + v.toString();
     out += "\n";
   };
+
   for (NodeId id : m.top_level) {
     const Node* n = m.find(id);
     if (!n) continue;
@@ -158,12 +192,20 @@ std::string printModule(const Module& m) {
 }
 
 ParseResult parseModule(const std::string& text) {
+  struct Pending {
+    size_t node_index = 0;
+    size_t operand_index = 0;
+    std::string name;
+    int line = 0;
+  };
+
   ParseResult res;
   res.ok = true;
   std::istringstream in(text);
   std::string line;
   int lineno = 0;
   std::vector<NodeId> scope_stack;
+  std::vector<Pending> pending;
   auto fail = [&](const std::string& msg) {
     res.ok = false;
     res.error = msg;
@@ -226,21 +268,54 @@ ParseResult parseModule(const std::string& text) {
       continue;
     }
 
-    // Node line: nID = kind [ref...] [key=value...]
-    if (tok.size() < 3 || tok[1] != "=") { fail("expected node assignment"); break; }
+    // Node: nID [name] = kind [ref...] [key=value...]
     NodeId id;
     if (!parseNodeIdToken(tok[0], &id)) { fail("malformed node id"); break; }
     if (res.module.contains(id)) { fail("duplicate node id"); break; }
+
+    size_t i = 1;
+    std::string name;
+    if (i < tok.size() && tok[i] != "=") {
+      name = tok[i];
+      if (!isValidNodeName(name)) {
+        fail("invalid node name '" + name + "'");
+        break;
+      }
+      ++i;
+    }
+    if (i >= tok.size() || tok[i] != "=") { fail("expected '='"); break; }
+    ++i;
+    if (i >= tok.size()) { fail("expected node kind"); break; }
+
     Node n;
     n.id = id;
-    n.kind = tok[2];
+    n.name = name;
+    n.kind = tok[i++];
     n.scope = scope_stack.empty() ? kInvalidId : scope_stack.back();
+
+    if (!name.empty()) {
+      bool dup = false;
+      for (const Node& o : res.module.nodes) {
+        if (o.scope == n.scope && o.name == name) { dup = true; break; }
+      }
+      if (dup) { fail("duplicate name '" + name + "' in scope"); break; }
+    }
+
     bool bad = false;
-    for (size_t i = 3; i < tok.size(); ++i) {
+    std::vector<size_t> local_pending;
+    for (; i < tok.size(); ++i) {
       const std::string& t = tok[i];
       ValueRef vr;
-      if (!t.empty() && t[0] == 'n' && parseValueRef(t, &vr)) {
+      if (parseIdRef(t, &vr)) {
         n.operands.push_back(vr);
+        continue;
+      }
+      std::string base;
+      uint32_t port = 0;
+      if (parseNameRef(t, &base, &port)) {
+        n.operands.push_back({kInvalidId, port});
+        pending.push_back({0, n.operands.size() - 1, base, lineno});
+        local_pending.push_back(pending.size() - 1);
         continue;
       }
       const size_t eq = t.find('=');
@@ -259,9 +334,31 @@ ParseResult parseModule(const std::string& text) {
     }
     if (bad) break;
     res.module.appendParsedNode(std::move(n));
+    const size_t node_index = res.module.nodes.size() - 1;
+    for (size_t pi : local_pending) pending[pi].node_index = node_index;
   }
 
   if (res.ok && !scope_stack.empty()) fail("unterminated function block");
+
+  // Resolve name references (scope first, then module level; order-independent).
+  if (res.ok) {
+    for (const Pending& p : pending) {
+      const Node& from = res.module.nodes[p.node_index];
+      const Node* found = nullptr;
+      for (const Node& n : res.module.nodes) {
+        if (n.name != p.name) continue;
+        if (n.scope == from.scope) { found = &n; break; }
+        if (n.scope == kInvalidId && !found) found = &n;
+      }
+      if (!found) {
+        res.ok = false;
+        res.line = p.line;
+        res.error = "unknown name '" + p.name + "'";
+        break;
+      }
+      res.module.nodes[p.node_index].operands[p.operand_index].id = found->id;
+    }
+  }
 
   // Structural check: operands must reference existing nodes.
   if (res.ok) {
