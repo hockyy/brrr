@@ -346,6 +346,17 @@ into (backends, frontends) via adapters.
   `print --explicit` / `--types` / `--generic` / `--c-like`. Budget rule: the
   generic form is the shortest lossless encoding *given declarations*; everything
   elided must be reconstructible from the schema.
+- 2026-10-13: **decided (not yet implemented)** — vocabulary lives in *compiler
+  modules*, never in documents. `scalar` / `type` / `kind` are defined in library
+  files (`lib/core.bs`, `lib/types.bs`, `lib/ops.bs`, `lib/control.bs`, ...),
+  versioned, loaded by the compiler as a default image (already the case: the
+  core/std/control modules are compiler-side, and schema files are a separate
+  format). Documents contain only data — nodes, facts, scopes — plus `import
+  <module>` declarations resolved from the module search path (built-in +
+  `--module-path=` / `--schemas=`), with content-hash pinning later. Inline
+  vocabulary in a `.br` is now a clear error ("cannot be declared in a document;
+  define it in a module and `import` it"); test `bad_vocab.br`. Types therefore
+  arrive via `lib/types.bs` (struct-like records) alongside kinds.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

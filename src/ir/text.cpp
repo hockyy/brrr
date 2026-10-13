@@ -324,6 +324,14 @@ ParseResult parseModule(const std::string& text) {
       continue;
     }
 
+    // Vocabulary belongs to compiler modules, never to a document.
+    if (tok[0] == "scalar" || tok[0] == "type" || tok[0] == "kind") {
+      fail("vocabulary (" + tok[0] +
+           " ...) cannot be declared in a document; define it in a module and "
+           "`import` it");
+      break;
+    }
+
     // Assignment inside a sugar loop body: `name = value` (the C++-shaped update).
     {
       NodeId maybe_id = kInvalidId;

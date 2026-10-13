@@ -483,4 +483,13 @@ else
   fail=1
 fi
 
+# Vocabulary lives in compiler modules, not in documents.
+if "$BIN" check "$CASES/bad_vocab.br" 2>&1 \
+     | grep -q "cannot be declared in a document"; then
+  echo "ok: inline vocabulary in a document rejected"
+else
+  echo "FAIL: inline vocabulary accepted"
+  fail=1
+fi
+
 exit $fail
