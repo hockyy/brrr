@@ -375,6 +375,32 @@ into (backends, frontends) via adapters.
   `ref` (stable id), `list`, `map`, `null`. Rationale: attribute payloads must not
   be bounded by element widths (a 128-bit mask literal is an attr `int`), and big
   payloads belong in side tables, not attrs.
+- 2026-10-13: **decided (not yet implemented)** — extended/dynamic types are
+  library-only and declared *class-shaped*: `class DynamicInt : int32 { ... }` in
+  `lib/*.bs`. A class body is data, never methods-in-C++:
+
+  ```
+  class DynamicInt : int32 {          # extends a primitive / another type
+    fields: { unit: string }          # extra fields (closed by default)
+    open: true                        # extension point: later modules may add
+    lower: int64                      # representation / lowering target
+    checks: { value_in: range, mod_ok: aligned }   # invariant hooks, by name
+    syntax: "dynint unit"             # custom syntax template for the parser gen
+    traits: pure
+    hooks: { verify: checker@v1, lower: plugin@ascend }   # engines, by reference
+  }
+  ```
+
+  Execution still comes from the generic engines (checker, solver, parser
+  generator, plugins) — a class *names* behavior, it never carries code.
+  Two senses of "dynamic" kept distinct: (i) **link-time extension** — classes can
+  be opened and extended by later modules, all resolution happening when the
+  module image is linked, so documents stay statically typed at compile time
+  (recommended); (ii) **runtime tagged values** — that is a *record/variant* type
+  (`variant { tag: uint8, ... }`), never a dynamic core type system. Consequences:
+  extension = schema growth at link time, so module version/hash pinning and
+  visibility matter (a document must not depend on fields it did not import), and
+  declaring `scalar`/`type`/`kind`/`class` inside a document stays forbidden.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 
