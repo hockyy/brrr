@@ -1,0 +1,8 @@
+# 07_lib — a library fragment. Root facts are shared with the includer; keep id
+# ranges disjoint across files that get included together (here: n1-n9).
+fact rows = 64
+
+func @identity(n1) {
+  n2 x = load dtype=@f16 shape="rows"
+  n3 = func.return x
+}

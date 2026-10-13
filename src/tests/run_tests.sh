@@ -440,13 +440,46 @@ if "$BIN" check "$CASES/bad_scope.br" >/dev/null 2>&1; then
   echo "FAIL: cross-scope reference accepted"
   fail=1
 else
-  echo "ok: cross-scope reference rejected (lexical scoping)"
+  echo "ok: cross-scope reference rejected (lexical scoping + dominance)"
 fi
 # The sanctioned crossings stay legal: phi -> predecessor values, terminator -> edges.
 if "$BIN" check "$EXAMPLES/dot_llvm.br" 2>/dev/null | grep -q "errors: 0"; then
   echo "ok: phi crossings remain legal (dot_llvm)"
 else
   echo "FAIL: phi crossings rejected"
+  fail=1
+fi
+
+# Showcase tour: every file round-trips and validates cleanly.
+SHOWCASE="$(cd "$CASES/../../showcase" && pwd)"
+for br in "$SHOWCASE"/*.br; do
+  if "$BIN" roundtrip "$br" >/dev/null 2>&1; then
+    echo "ok: showcase roundtrip $(basename "$br")"
+  else
+    echo "FAIL: showcase roundtrip $br"
+    fail=1
+  fi
+  if "$BIN" check "$br" 2>/dev/null | grep -q "errors: 0"; then
+    echo "ok: showcase check $(basename "$br")"
+  else
+    echo "FAIL: showcase check $br"
+    fail=1
+  fi
+done
+
+# Showcase queries: functor and scoped facts.
+if "$BIN" ask "$SHOWCASE/02_invariants.br" root "aligned(n, 16)" 2>/dev/null \
+     | grep -q -- "-> Yes"; then
+  echo "ok: showcase functor query (aligned)"
+else
+  echo "FAIL: showcase functor query"
+  fail=1
+fi
+if "$BIN" ask "$SHOWCASE/04_control_cfg.br" then "a >= b" 2>/dev/null \
+     | grep -q -- "-> Yes"; then
+  echo "ok: showcase branch-scoped facts"
+else
+  echo "FAIL: showcase branch facts"
   fail=1
 fi
 

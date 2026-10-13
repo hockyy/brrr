@@ -1,0 +1,14 @@
+# 03 — Vocabulary is declared data, not code. Ports are named and typed
+# (value | block | edge); attrs are typed (int, float, str, sym, dtype, expr,
+# dims); results have a policy; scalars are declared primitives.
+#
+#   bridgeir schema                                  # scalars + kinds + traits
+#   bridgeir schema --core-only                       # core module alone
+#   bridgeir check  src/showcase/03_vocabulary.br
+#
+# A bad shape is a load error, not a pass crash: try editing `in` to "n +".
+func @typed_load(n1) {
+  n2 x = load dtype=@f16 shape="n, 128"
+  n3 r = reshape x in="n, 128" out="n * 2, 64"
+  n4 = func.return r
+}

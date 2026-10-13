@@ -312,15 +312,27 @@ into (backends, frontends) via adapters.
   the expression lexer returned `End` instead of `Bad`, silently truncating
   `fact a >= b` to `a == b`; unknown operators now fail loudly and `>=`/`<=` are
   real inequalities.
-- 2026-10-13: scoping completed in two rules (`scoping.md`): **lexical** visibility
-  for structured scopes (module/func/loop, via parent links) and **CFG dominance**
-  for block scopes (iterative dominator pass; successors from terminators and
-  `edge`s). Crossings only on sanctioned roads declared by traits: terminator →
-  blocks/edges, edge → its target (operand 0), phi → predecessor values. The check
-  immediately caught my own `dot_llvm.br` (header value used in the body — legal by
-  dominance, illegal lexically; by-id smuggling had hidden it). Negative:
-  `bad_scope.br`. Deferred: intra-block ordering, symbol visibility, containment
-  rules (level-3 constraints), cross-module symbols.
+- 2026-10-13: language showcase added (`src/showcase/`, 8 files + index, round-trip
+  and check enforced by the suite): identity, facts/invariants, declared
+  vocabulary, canonical CFG, structured loops, C++ sugar, modules + `#include`.
+  `ask` gained functor queries (`aligned(n, 16)`) alongside comparisons. Tour
+  index: `src/showcase/README.md`; design notes per feature in `docs/scratch/`.
+- 2026-10-13: **decided (not yet implemented)** — two surface redesigns:
+  (1) *identity*: an id is a C++-style identifier (`acc`, `i`, `sum`), document-
+  unique, with no scope-local resolution; internal stable ids remain for
+  provenance/caches, so renames never break identity. Names become identifiers and
+  **visibility is dominance/sanctioned-roads, not name scoping** — the showcase's
+  `unknown name 'e_then'` failure is exactly why (a child-scope `edge` cannot be
+  named from the parent, yet the canonical CFG form requires it). Also kills the
+  printer's resolve-back heuristic: a node prints the same everywhere.
+  (2) *types*: types are **struct-like records**, not positional type constructors:
+  declaration `type tensor { dtype: scalar; shape: dims }`, usage
+  `tensor { dtype: f16, shape: [64, 128] }` — named, order-independent,
+  self-describing, recursively validated by field declarations. Angle-bracket terms
+  (`tensor<f16, 64>`) demote to the *interop* syntax (`parseTypeTerm`), not the
+  native surface. Unifies attrs, ports, and types as one mechanism: declared
+  records. The language then has exactly three declarables — `scalar` (nullary),
+  `type` (record), `kind` (operation schema) — all data.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

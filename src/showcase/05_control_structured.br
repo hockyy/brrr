@@ -1,0 +1,25 @@
+# 05 — Structured loops. The loop is a scope: carried values are its parameters,
+# `loop.yield` supplies (continue-condition, next values), and `loop.N` ports are
+# the exit values. Invariants live in the body and answer queries there.
+#
+#   bridgeir print src/showcase/05_control_structured.br
+#   bridgeir ask   src/showcase/05_control_structured.br sum "i <= n"   -> Yes
+#   bridgeir ask   src/showcase/05_control_structured.br root "i <= n"  -> Unknown
+func @sum_to_n(n1) {
+  n2 n = param idx=0 type="i64"
+  n3 zero = arith.constant type="i64" value="0"
+  n4 one = arith.constant type="i64" value="1"
+
+  n5 sum = loop zero n {
+    n6 acc = param idx=0
+    n7 i = param idx=1
+    fact 0 <= i
+    fact i <= n
+    n8 next_i = arith.addi i one
+    n9 new_acc = arith.addi acc i
+    n10 more = icmp next_i n pred="slt"
+    n11 = loop.yield more new_acc next_i
+  }
+
+  n12 = func.return sum.1
+}

@@ -1,0 +1,13 @@
+# 01 — Identity. Ids are forever; names are for humans; renames are journaled.
+#
+#   bridgeir print    src/showcase/01_identity.br
+#   bridgeir rename   src/showcase/01_identity.br sum total
+#   bridgeir to-json  src/showcase/01_identity.br
+fact tile = 128
+
+func @scale(n1) {
+  n2 x = load dtype=@f16 shape="tile"
+  n3 y = load dtype=@f16 shape="tile"
+  n4 sum = add x y
+  n5 = func.return sum
+}

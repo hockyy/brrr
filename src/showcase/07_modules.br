@@ -1,0 +1,14 @@
+# 07 — Modules and composition: the rest is just modules.
+#
+#   bridgeir print src/showcase/07_modules.br   # shows the #include expansion
+#   bridgeir check src/showcase/07_modules.br
+#   bridgeir schema                                # the vocabulary itself is modules
+#include "07_lib.br"
+
+module @kernels(n10) {
+  func @scale(n11) {
+    n12 x = load dtype=@f16 shape="rows"
+    n13 y = arith.addi x x
+    n14 = func.return y
+  }
+}

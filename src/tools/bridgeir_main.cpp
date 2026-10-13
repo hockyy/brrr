@@ -441,6 +441,45 @@ int main(int argc, char** argv) {
       scope = found->id;
     }
 
+    // Functor query: aligned(expr, modulus)
+    if (query.rfind("aligned(", 0) == 0 && query.back() == ')') {
+      const std::string inner = query.substr(8, query.size() - 9);
+      const std::vector<std::string> parts =
+          bridgeir::symbolic::splitTopLevel(inner, ',');
+      if (parts.size() != 2) {
+        std::cerr << "error: aligned expects aligned(expr, modulus)\n";
+        return 1;
+      }
+      std::string perr;
+      const bridgeir::symbolic::Expr e =
+          bridgeir::symbolic::parseExpr(parts[0], &perr);
+      if (!e) {
+        std::cerr << "error: " << perr << "\n";
+        return 1;
+      }
+      int64_t m = 0;
+      bool ok_int = !parts[1].empty();
+      for (const char c : parts[1]) {
+        if (c < '0' || c > '9') {
+          ok_int = false;
+          break;
+        }
+        m = m * 10 + (c - '0');
+      }
+      if (!ok_int) {
+        std::cerr << "error: modulus must be a positive integer\n";
+        return 1;
+      }
+      std::string serr;
+      const bridgeir::symbolic::Solver sf =
+          bridgeir::symbolic::solverForScope(pr.module, scope, &serr);
+      const bridgeir::symbolic::Tri t = sf.aligned(e, m);
+      std::cout << "aligned(" << parts[0] << ", " << m << ") -> "
+                << bridgeir::symbolic::toString(t) << " (scope "
+                << scopeLabel(pr.module, scope) << ")\n";
+      return 0;
+    }
+
     const std::pair<std::string, int> ops[] = {
         {"==", 0}, {"<=", 1}, {">=", 3}, {"<", 2}, {">", 4}};
     size_t op_pos = std::string::npos;
