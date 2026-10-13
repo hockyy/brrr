@@ -12,6 +12,7 @@ endif()
 add_library(bridgeir_core
   ir/ir.cpp
   ir/text.cpp
+  ir/sugar.cpp
   io/json.cpp
   io/c_like.cpp
   passes/demo_fuse.cpp

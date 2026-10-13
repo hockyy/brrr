@@ -84,6 +84,8 @@ class Module {
 
   // Stable-id allocator: strictly monotonic — never renumbers, never reuses.
   NodeId allocId();
+  // Keep the allocator above an id seen in the text (used before parsing).
+  void reserveId(NodeId id);
 
   Node* find(NodeId id);
   const Node* find(NodeId id) const;

@@ -1,5 +1,7 @@
 #include "ir/text.h"
 
+#include "ir/sugar.h"
+
 #include <cctype>
 #include <cstdlib>
 #include <sstream>
@@ -235,7 +237,50 @@ ParseResult parseModule(const std::string& text) {
 
   ParseResult res;
   res.ok = true;
-  std::istringstream in(text);
+
+  // Collect lines first: a global id reservation keeps synthesized loop nodes
+  // from colliding with explicit ids, and `while` needs lookahead for its
+  // carried names.
+  std::vector<std::string> lines;
+  {
+    std::istringstream in(text);
+    std::string l;
+    while (std::getline(in, l)) {
+      if (!l.empty() && l.back() == '\r') l.pop_back();
+      lines.push_back(l);
+    }
+  }
+  // C++-shaped sugar (`for`/`while`/`if`) lowers to canonical lines first.
+  {
+    std::string serr;
+    if (!lowerCppSugar(&lines, &serr)) {
+      res.ok = false;
+      res.error = serr;
+      res.line = 0;
+      return res;
+    }
+  }
+
+  for (const std::string& l : lines) {
+    for (const std::string& t : tokenize(l)) {
+      std::string base = t;
+      const size_t dot = base.find('.');
+      if (dot != std::string::npos) base = base.substr(0, dot);
+      NodeId id = kInvalidId;
+      if (parseNodeIdToken(base, &id)) res.module.reserveId(id);
+    }
+  }
+
+  // C++-shaped loop sugar: scopes currently open as `for`/`while`. The header is
+  // desugared into `loop` + `param`s + `loop.yield`; nothing new in the core.
+  struct SugarLoop {
+    size_t depth = 0;  // scope_stack size while the body is open
+    std::vector<std::string> carried;
+    std::string cond_tok;
+    std::vector<std::string> next_tok;  // parallel to carried
+  };
+  std::vector<SugarLoop> sugar;
+
   std::string line;
   int lineno = 0;
   std::vector<NodeId> scope_stack;
@@ -246,9 +291,9 @@ ParseResult parseModule(const std::string& text) {
     res.line = lineno;
   };
 
-  while (std::getline(in, line)) {
+  for (const std::string& raw_line : lines) {
+    line = raw_line;
     ++lineno;
-    if (!line.empty() && line.back() == '\r') line.pop_back();
 
     // Strip comments (outside quotes), full-line or trailing.
     bool in_str = false;
@@ -277,6 +322,32 @@ ParseResult parseModule(const std::string& text) {
           {scope_stack.empty() ? kInvalidId : scope_stack.back(),
            line.substr(b, e - b + 1)});
       continue;
+    }
+
+    // Assignment inside a sugar loop body: `name = value` (the C++-shaped update).
+    {
+      NodeId maybe_id = kInvalidId;
+      const bool is_id = parseNodeIdToken(tok[0], &maybe_id);
+      if (!is_id && tok.size() >= 2 && tok[1] == "=") {
+        if (sugar.empty() || sugar.back().depth != scope_stack.size()) {
+          fail("assignment outside a for/while loop");
+          break;
+        }
+        if (tok.size() != 3) {
+          fail("assignment must be 'name = value'");
+          break;
+        }
+        size_t slot = sugar.back().carried.size();
+        for (size_t k = 0; k < sugar.back().carried.size(); ++k) {
+          if (sugar.back().carried[k] == tok[0]) slot = k;
+        }
+        if (slot == sugar.back().carried.size()) {
+          fail("assignment to '" + tok[0] + "', which the loop does not carry");
+          break;
+        }
+        sugar.back().next_tok[slot] = tok[2];
+        continue;
+      }
     }
 
     if (tok.size() == 1 && tok[0] == "}") {

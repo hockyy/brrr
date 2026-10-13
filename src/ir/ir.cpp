@@ -106,6 +106,10 @@ std::string Node::attrString(const std::string& key,
 
 NodeId Module::allocId() { return next_id_++; }
 
+void Module::reserveId(NodeId id) {
+  if (id >= next_id_) next_id_ = id + 1;
+}
+
 Node* Module::find(NodeId id) {
   for (auto& n : nodes)
     if (n.id == id) return &n;

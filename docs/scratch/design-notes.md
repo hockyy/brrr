@@ -298,6 +298,13 @@ into (backends, frontends) via adapters.
   Relational checks: params == initial operands, exactly one yield, yield arity ==
   params+1. `loop_simple.br` (vs `loop_cfg.br`); negative `bad_loop.br`. Std/control
   port declarations typed; schema printer renders types and `( ... )*` groups.
+- 2026-10-13: C++-shaped sugar (`for`/`while`/`if`/`else`) implemented as a textual
+  lowering step (`src/ir/sugar.cpp`, runs before parsing): for/while → `loop` +
+  params + `loop.yield` (while discovers carried names from body assignments);
+  if/else → `cbr` + branch blocks + `edge`s + a join block carrying the node
+  id/name. Honest limit: conditions/steps are SSA value names, not expressions —
+  expression/assignment lowering = SSA construction, the next frontend level.
+  Examples `loop_cpp.br`, `branch_cpp.br`; negatives `bad_for.br`, `bad_if.br`.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

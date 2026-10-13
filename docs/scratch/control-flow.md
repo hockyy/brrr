@@ -80,6 +80,33 @@ exit is a port rather than another edge. The CFG form remains for lowering
 fidelity and imports (like phi); the structured form is what a human or agent
 should write first. See `examples/loop_simple.br` vs `examples/loop_cfg.br`.
 
+## C++-shaped sugar: `for`, `while`, `if/else` (implemented)
+
+Surface sugar, lowered textually *before* parsing; the canonical form stays
+dataflow, so nothing in the core, schema, or checks changes:
+
+```
+n5 sum  = for (acc = zero, i = n_val; more; acc = new_acc, i = next_i) { ... }
+n14 w   = while (more) { ... i = next ... }        # carried names from assignments
+n5 pick = if (greater) { n6 = yield a } else { n7 = yield b }
+```
+
+Lowering: `for`/`while` → `loop` + `param`s + `loop.yield`; `if` → `cbr` + branch
+`block`s + `edge`s + a join `block` that carries the node id/name (so `pick` is the
+join's value and `pick.1` its second port).
+
+Honest boundaries:
+
+- Conditions, step values and assignment right-hand sides are **SSA value names or
+  ids**, not expressions. `i = i - 1` needs expression/assignment lowering — a
+  frontend feature (SSA construction), the documented next level.
+- `while` discovers its carried names from depth-0 body assignments; the initial
+  value is the enclosing binding of that name (C++ semantics: state before loop).
+- Value-`if` only: both branches, exactly one `yield` each, equal arity.
+- Everything else still applies: facts scope to their block (`ask n10 "a >= b"` in
+  a branch answers), the verifier checks edges/params, and printing shows the
+  canonical lowered form (`print` on `loop_cpp.br` / `branch_cpp.br`).
+
 ## Block arguments vs phi nodes (both declared; block args are canonical)
 
 | | phi nodes (LLVM) | block arguments (MLIR, SIL, BridgeIR) |

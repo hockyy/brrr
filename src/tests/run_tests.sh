@@ -371,4 +371,68 @@ else
   echo "ok: loop yield arity violation rejected"
 fi
 
+# C++-shaped sugar: `for`/`while` lower to loop + params + loop.yield.
+if "$BIN" check "$EXAMPLES/loop_cpp.br" 2>/dev/null \
+     | grep -q "errors: 0, warnings: 0"; then
+  echo "ok: C++ for/while sugar validates cleanly"
+else
+  echo "FAIL: C++ for/while validation"
+  fail=1
+fi
+cpp_out="$("$BIN" print "$EXAMPLES/loop_cpp.br" 2>/dev/null)"
+if echo "$cpp_out" | grep -q "n5 sum = loop zero n_val {" &&
+   echo "$cpp_out" | grep -q "= loop.yield more new_acc next_i" &&
+   echo "$cpp_out" | grep -q "n14 w = loop i {"; then
+  echo "ok: for/while lower to loop scopes (carried params + yield)"
+else
+  echo "FAIL: for/while lowering"
+  echo "$cpp_out" | head -12
+  fail=1
+fi
+if "$BIN" ask "$EXAMPLES/loop_cpp.br" sum "0 <= i" 2>/dev/null \
+     | grep -q -- "-> Yes"; then
+  echo "ok: invariants survive for-loop lowering"
+else
+  echo "FAIL: for-loop invariants"
+  fail=1
+fi
+if "$BIN" check "$CASES/bad_for.br" >/dev/null 2>&1; then
+  echo "FAIL: for-loop missing step accepted"
+  fail=1
+else
+  echo "ok: for-loop missing carried update rejected"
+fi
+
+# C++-shaped sugar: `if`/`else` lowers to cbr + blocks + edges + a join block.
+if "$BIN" check "$EXAMPLES/branch_cpp.br" 2>/dev/null \
+     | grep -q "errors: 0, warnings: 0"; then
+  echo "ok: C++ if/else sugar validates cleanly"
+else
+  echo "FAIL: C++ if/else validation"
+  fail=1
+fi
+br_out="$("$BIN" print "$EXAMPLES/branch_cpp.br" 2>/dev/null)"
+if echo "$br_out" | grep -q "= cbr greater" &&
+   echo "$br_out" | grep -q "= edge pick a" &&
+   echo "$br_out" | grep -q "n5 pick = block {"; then
+  echo "ok: if/else lowers to cbr + branch blocks + join block"
+else
+  echo "FAIL: if/else lowering"
+  echo "$br_out" | head -14
+  fail=1
+fi
+if "$BIN" ask "$EXAMPLES/branch_cpp.br" n10 "a >= b" 2>/dev/null \
+     | grep -q -- "-> Yes"; then
+  echo "ok: branch facts are scoped to their block"
+else
+  echo "FAIL: branch-scoped facts"
+  fail=1
+fi
+if "$BIN" check "$CASES/bad_if.br" >/dev/null 2>&1; then
+  echo "FAIL: mismatched if-branch yields accepted"
+  fail=1
+else
+  echo "ok: mismatched if-branch yields rejected"
+fi
+
 exit $fail

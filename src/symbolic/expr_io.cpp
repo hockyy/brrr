@@ -57,7 +57,9 @@ class Lexer {
       case '*': t.kind = Tok::Kind::Star; return t;
       case '(': t.kind = Tok::Kind::LParen; return t;
       case ')': t.kind = Tok::Kind::RParen; return t;
-      default: return t;  // Bad
+      default:
+        t.kind = Tok::Kind::Bad;
+        return t;
     }
   }
 

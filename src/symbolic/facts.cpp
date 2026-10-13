@@ -113,12 +113,12 @@ bool applyFact(const std::string& line, Solver& s, std::string* err) {
     return false;
   }
 
-  // Inequality form: expr <= expr (strict `<` is not supported; use `<=`).
-  const size_t le = body.find("<=");
-  if (le != std::string::npos) {
-    Expr lhs = parseExpr(trim(body.substr(0, le)), err);
+  // Inequality forms: `a <= b` and `a >= b` (strict `<`/`>` are rejected loudly
+  // rather than silently mis-parsed).
+  auto addInequality = [&](const std::string& l, const std::string& r) -> bool {
+    Expr lhs = parseExpr(trim(l), err);
     if (!lhs) return false;
-    Expr rhs = parseExpr(trim(body.substr(le + 2)), err);
+    Expr rhs = parseExpr(trim(r), err);
     if (!rhs) return false;
     if (s.lessOrEqual(rhs, lhs) == Tri::No) {
       *err = "fact contradicts existing facts: " + trim(body) + " is refuted";
@@ -126,6 +126,18 @@ bool applyFact(const std::string& line, Solver& s, std::string* err) {
     }
     s.assertLe(lhs, rhs);
     return true;
+  };
+  if (const size_t le = body.find("<="); le != std::string::npos) {
+    return addInequality(body.substr(0, le), body.substr(le + 2));
+  }
+  if (const size_t ge = body.find(">="); ge != std::string::npos) {
+    return addInequality(body.substr(ge + 2), body.substr(0, ge));  // a>=b == b<=a
+  }
+  if (body.find('<') != std::string::npos ||
+      body.find('>') != std::string::npos) {
+    *err = "strict inequalities are not supported; use `<=` or `>=` in: " +
+           trim(body);
+    return false;
   }
 
   // Equality form: expr = expr
