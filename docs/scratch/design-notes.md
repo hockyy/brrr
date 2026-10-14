@@ -193,7 +193,7 @@ into (backends, frontends) via adapters.
 
 ## Decision log
 
-- 2026-10-13: repo `hockyy/Brrr` created (private); local `~/pg/Brrr`.
+- 2026-10-13: repo created (private).
 - 2026-10-13: `docs/` = the paper (LaTeX); scratch = `docs/scratch/`; `src/` = code.
 - 2026-10-13: vision recorded (extendable/fast/loose; feedback-first; sustainable;
   reuse-not-recode).
@@ -671,12 +671,11 @@ into (backends, frontends) via adapters.
   integer expression (operands, list elements, result dims) to a constant pinned
   by the facts or to Z3's simplification. A rewrite is kept only when it is smaller
   and proven equal, so Z3's simplifier proposes and the solver checks.
-- 2026-10-14: **renamed BridgeIR -> Brrr** ("Bot-Readable, Reasoned, Reproducible";
-  compiler go brrr). Agents read it, the solver backs its claims, and runs are recorded
-  and replayable. The file extension stays `.br`. Renamed everywhere: the C++
-  namespace `brrr`, the CMake targets, the binary, `BRRR_*` variables and macros, the
-  `.brrr/` run store, and the docs. Older entries above were rewritten with the new
-  name.
+- 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
+  go brrr). Agents can read it, the solver backs its claims, and runs are recorded
+  and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets
+  and the `BRRR_*` variables all use the name, and runs live in `.brrr/`. The repo is
+  public at github.com/hockyy/brrr.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

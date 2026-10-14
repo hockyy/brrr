@@ -1,7 +1,6 @@
 # Brrr
 
 **B**ot-**R**eadable, **R**easoned, **R**eproducible. Compiler go brrr.
-(Formerly BridgeIR; files are still `.br`.)
 
 A small compiler IR, written from scratch in C++20 with no MLIR or LLVM
 dependency, built around three ideas MLIR does not have:
@@ -13,11 +12,13 @@ dependency, built around three ideas MLIR does not have:
    an expression over SSA values: `tensor<[2 * %n, 64], f16>`, `sub %i, 1`,
    `fact 0 <= %i <= %n`. A solver (Z3, with local rules as a fallback and
    cross-check) judges every shape equation as Yes, No or Unknown. Nothing is
-   guessed, and an Unknown can become a runtime guard. This
-   replaces MLIR's `?` dimensions, `OpFoldResult`, and affine maps.
+   guessed, and an Unknown can become a runtime guard. This replaces MLIR's `?`
+   dimensions, `OpFoldResult`, and affine maps.
 3. **Compilation as a recorded, branchable history.** Every pipeline run has an id.
    Every stage stores the IR before and after it, and an agent (or a person) can
    inspect any stage, branch from it, edit the pipeline or the IR, and resume.
+
+A `.br` file:
 
 ```
 func @sum_to_n(%n: index) -> index {
@@ -43,8 +44,12 @@ cmake --build src/build
 ctest --test-dir src/build --output-on-failure
 ```
 
+Z3 is optional. CMake picks it up from `third_party/z3` or the system; without
+it, the local rules decide alone ([solver notes](docs/scratch/solver.md)).
+
 Then follow the tour in [`src/showcase/`](src/showcase/README.md): identity,
-facts, vocabulary, control flow, loops, symbolic shapes, modules, and pipeline runs.
+facts, vocabulary, control flow, loops, symbolic shapes, modules, pipeline runs,
+the affine bridge, and a solver-backed pass.
 
 ## Status
 
@@ -70,12 +75,11 @@ Prototype. What works and is tested (four `ctest` suites, ~170 CLI checks):
 - the run store: `run`, `resume`, `branch`, `show`, `runs`, with hand edits as
   recorded stages and rollback of any stage that fails verification.
 
-Not yet: a rewrite-pattern engine, code generation (the plan is to emit LLVM IR text), call ops and
-interprocedural preconditions, `min`/`max` in expressions, a full MLIR
-importer/exporter (only affine maps so far), a binary format, and any performance
-measurement against MLIR. "Faster than MLIR"
-is a goal, not a result: the core builds in seconds, but compile-time speed has
-not been benchmarked.
+Not yet: a rewrite-pattern engine, code generation (the plan is to emit LLVM IR
+text), call ops and interprocedural preconditions, `min`/`max` in expressions, a
+full MLIR importer/exporter (only affine maps so far), a binary format, and any
+performance measurement against MLIR. "Faster than MLIR" is a goal, not a result:
+the core builds in seconds, but compile-time speed has not been benchmarked.
 
 ## Layout
 
@@ -85,4 +89,4 @@ not been benchmarked.
 | `src/showcase/` | a guided tour, one concept per file |
 | `src/examples/` | external IRs mapped in: LLVM, torch.fx, AscendNPU HIVM, `scf.while` |
 | `docs/scratch/` | design notes and the decision log; [`syntax-v1.md`](docs/scratch/syntax-v1.md) is the spec |
-| `docs/` | the paper draft (LaTeX) |
+| `docs/` | the paper draft (LaTeX; build with `latexmk -pdf main.tex`) |

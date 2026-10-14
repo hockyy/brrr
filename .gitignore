@@ -29,6 +29,7 @@ compile_commands.json
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+docs/main.pdf
 
 # brrr run store (runs, stage records, states)
 .brrr/
