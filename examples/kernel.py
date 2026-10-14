@@ -251,6 +251,25 @@ def lower(ep, dynamic):
     return "\n".join(header + func) + "\n", kinds
 
 
+def dump_data(outdir, t, seed=0):
+    """Parameters, an input of 8 * t tokens, and torch's output, as raw f32 files
+    (row-major, the layout `forward`'s buffers use). Returns the module and input."""
+    import array
+
+    torch.manual_seed(seed)
+    model = FeedForward().eval()
+    x = torch.randn(8 * t, 64)
+    with torch.no_grad():
+        y = model(x)
+    os.makedirs(outdir, exist_ok=True)
+    tensors = [("fc1_weight", model.fc1.weight), ("fc1_bias", model.fc1.bias),
+               ("fc2_weight", model.fc2.weight), ("fc2_bias", model.fc2.bias), ("x", x), ("y", y)]
+    for name, a in tensors:
+        with open(os.path.join(outdir, name + ".bin"), "wb") as f:
+            array.array("f", a.detach().contiguous().view(-1).tolist()).tofile(f)
+    return model, x
+
+
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else HERE  # optional output directory
     ep = export_kernel()

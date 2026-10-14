@@ -121,6 +121,14 @@ if command -v clang >/dev/null 2>&1; then
   else flunk "lower-aten: the lowered PyTorch kernel compiles with clang" "$(cat "$TMP/clang_k.log")"; fi
 fi
 
+# End to end: PyTorch kernel -> lower-aten -> to-llvm -> clang -> the same numbers as torch.
+if [ -n "$TORCH_PY" ] && command -v clang >/dev/null 2>&1; then
+  contains "end to end: the compiled PyTorch kernel matches torch" "match: torch and brrr agree" \
+    "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e"
+else
+  echo "skip: end to end needs python with torch and clang"
+fi
+
 # ---- identity --------------------------------------------------------------------
 contains "clean form: an unnamed value prints as its id" "%5 = relu %sum" \
   "$BIN" print "$SHOWCASE/01_identity.br"

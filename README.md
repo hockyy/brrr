@@ -57,6 +57,12 @@ with `torch.export` and writes `examples/kernel.br`. torch's dynamic token count
 fact, and Brrr re-proves every shape torch inferred
 (`brrr check examples/kernel.br --schemas=examples/aten.bs`).
 
+And out to a binary: `python examples/build.py` lowers the kernel to loops
+(`lower-aten`), emits LLVM IR (`brrr to-llvm`), compiles it with clang, and checks
+it against torch's own output. It matches within 6e-7. These are naive loops, the
+baseline before any specialization: about 15x slower than single-threaded torch
+([codegen notes](docs/scratch/codegen.md)).
+
 ## Status
 
 Prototype. What works and is tested (four `ctest` suites, ~170 CLI checks):

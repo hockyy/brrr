@@ -50,9 +50,37 @@ brrr run examples/kernel.br --passes=lower-aten --schemas=examples/aten.bs
 - **An op without a lowering** fails the pass and names the op. The run store rolls
   the stage back.
 
-The lowered feed-forward block compiles with clang `-O3`. Against PyTorch's own
-output (t = 4, 32 tokens) the maximum absolute error is 4.8e-7. The harness and the
-timing are tracked in #20.
+## End to end: `examples/build.py`
+
+```
+python examples/build.py            # [--t 4,64,512] [--reps 20] [--work DIR]
+```
+
+One command runs the whole path:
+
+1. `kernel.br` (written by `torch.export`)
+2. `lower-aten`
+3. `to-llvm`
+4. `clang -O3 -march=native` with `examples/harness.c`
+5. a run against torch's own output, timed alongside torch
+
+The baseline, measured on this machine (Arrow Lake, AVX2 + FMA):
+
+| tokens | max abs err | Brrr, naive loops | torch (all threads) | torch (1 thread) |
+|---|---|---|---|---|
+| 32 | 4.8e-7 | 0.27 ms | 0.075 ms | 0.029 ms |
+| 512 | 4.8e-7 | 4.3 ms | 0.12 ms | 0.27 ms |
+| 4096 | 6.0e-7 | 34.5 ms | 0.41 ms | 2.4 ms |
+
+The naive loops are about 15× slower than single-threaded torch at 4096 tokens:
+
+- **No vectorization.** The float reduction runs scalar, because LLVM may not
+  reassociate it without permission.
+- **No tiling.** Nothing keeps the weights in cache.
+- **No facts used.** The fact `t >= 2` and the static inner dims are not exploited.
+
+This is the starting point the agent's niching improves on, with each step
+recorded as a run.
 
 ## Not yet
 
