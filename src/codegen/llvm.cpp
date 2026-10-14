@@ -278,6 +278,10 @@ class Emitter {
       std::string instr;
       if (isFloat(t)) {
         instr = k == "add" ? "fadd" : k == "sub" ? "fsub" : "fmul";
+        for (const char* flag : {"reassoc", "contract"}) {  // LLVM fast-math flags
+          const AttrValue* f = n.findAttr(flag);
+          if (f && f->kind == AttrValue::Kind::Bool && f->b) instr += std::string(" ") + flag;
+        }
       } else {
         instr = k;
         const AttrValue* nsw = n.findAttr("nsw");

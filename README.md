@@ -174,29 +174,46 @@ torch's own output:
 $ brrr show r1 > special.br && brrr to-llvm special.br > special.ll
 $ clang -O3 -march=native special.ll examples/harness.c -o special
 $ python examples/build.py               # kernel.br -> lower-aten -> to-llvm -> clang -> compare with torch
+$ python examples/build.py --passes "lower-aten,allow-reassoc"   # the same, with one niching step
 ```
 
 ## From PyTorch to a binary: where it stands
 
-`python examples/build.py` on this machine (Arrow Lake, AVX2 + FMA):
+`python examples/build.py --passes "<pipeline>"` on this machine (Arrow Lake,
+AVX2 + FMA). Every row matches torch's output within 6e-7:
 
-| tokens | max abs err vs torch | Brrr, naive loops | torch (all threads) | torch (1 thread) |
+| tokens | `lower-aten` (naive loops) | `lower-aten,allow-reassoc` | torch (all threads) | torch (1 thread) |
 |---|---|---|---|---|
-| 32 | 4.8e-7 | 0.27 ms | 0.075 ms | 0.029 ms |
-| 512 | 4.8e-7 | 4.3 ms | 0.12 ms | 0.27 ms |
-| 4096 | 6.0e-7 | 34.5 ms | 0.41 ms | 2.4 ms |
+| 32 | 0.27 ms | **0.056 ms** | 0.06 ms | 0.030 ms |
+| 512 | 4.3 ms | **0.70 ms** | 0.10 ms | 0.27 ms |
+| 4096 | 34.5 ms | **6.3 ms** | 0.41 ms | 2.3 ms |
 
-The numbers are right, and the code is slow: about 15× slower than torch on one
-thread. Nothing has been niched yet. Step 4's specialization alone changes
-nothing either; it is 4.3 ms with or without it at 512 tokens, because the naive
-loop is limited by a scalar float reduction, not by its loop bounds. The speed
-will come from these next steps, each one a run an agent can branch and measure:
+**The first niching step was one recorded permission: `allow-reassoc`.** Float
+addition isn't associative, because `(a + b) + c` and `a + (b + c)` can round
+differently. So without permission LLVM must sum a dot product strictly in
+order. That is a serial chain of adds, each waiting about 4 cycles for the one
+before it, and it can't use the CPU's 8-wide vector lanes. `allow-reassoc` finds
+the loop reductions (here, the two linear layers' k-loops) and marks just those
+adds `reassoc=true`. LLVM then keeps vector partial sums and combines them at
+the end. That made the kernel **about 5.5× faster**. The results still match
+torch, whose own matmul doesn't sum in order either. The permission is an op
+attribute, so it is visible in the IR, and each grant is logged in the stage
+record by node id.
 
-- **Reassociation.** An opt-in `reassoc` flag on float adds, so LLVM can
-  vectorize the reductions.
-- **Tiling and unrolling** of the linear loops for the target's vector width.
-- **Facts as LLVM hints.** What Brrr proved becomes `llvm.assume`, `noalias` and
-  `align`.
+What didn't help (measured, so you don't have to): `contract=true` (fusing
+`a * b + c` into FMA) shows no consistent change. Neither does specializing to
+512 tokens with a guard (step 4 above). The loop is now limited by loads: every
+multiply-add reads one `x` and one `w`.
+
+Still about 2.7× slower than torch on one thread. Next, each step a run an agent
+can branch and measure:
+
+- **Register-block tiling** of the linear loops ([#25](https://github.com/hockyy/brrr/issues/25)):
+  reuse each loaded value across several rows and columns, the fix for a
+  load-bound loop. The kernel's `8 * %t` makes 2/4/8-row tiles remainder-free,
+  and the solver proves it.
+- **Facts as LLVM hints** ([#26](https://github.com/hockyy/brrr/issues/26)): what
+  Brrr proved becomes `noalias`, `llvm.assume` and `align`.
 
 ## Running a pipeline: the reference
 
@@ -260,11 +277,11 @@ Prototype. What works and is tested (four `ctest` suites, ~200 CLI checks):
   (`brrr to-llvm` + clang), checked against torch ([codegen notes](docs/scratch/codegen.md));
 - passes, one self-registering C++ file each: `infer-shapes`, `fold-constants`,
   `fold-reshape`, `insert-guards`, `reconcile-casts`, `dce`, `canonicalize`,
-  `lower-aten`;
+  `lower-aten`, `allow-reassoc`;
 - the run store: `run`, `resume`, `branch`, `show`, `runs`, with hand edits as
   recorded stages and rollback of any stage that fails verification.
 
-Not yet: any niching (the generated code is the naive baseline above), a
+Not yet: most niching (so far only `allow-reassoc`, see above), a
 rewrite-pattern engine, call ops and preconditions at call sites, `min`/`max`
 in expressions, and vector types. The roadmap is
 [hockyy/brrr#1](https://github.com/hockyy/brrr/issues/1).

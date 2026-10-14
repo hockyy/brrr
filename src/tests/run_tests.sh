@@ -132,9 +132,28 @@ if command -v clang >/dev/null 2>&1; then
 fi
 
 # End to end: PyTorch kernel -> lower-aten -> to-llvm -> clang -> the same numbers as torch.
+
+# Niching 1: allow-reassoc lets float loop reductions be reordered (and FMA-fused).
+RA="$TMP/reassoc"
+contains "allow-reassoc: two reductions and their multiplies change" "allow-reassoc contract=true  ok" \
+  "$BIN" run "$TORCH_EX/kernel.br" --passes="lower-aten,allow-reassoc contract=true" \
+  --schemas="$TORCH_EX/aten.bs" "--store=$RA"
+contains "allow-reassoc: the record names every grant" "reassoc contract (reduction into" \
+  "$BIN" show r1@2 --record "--store=$RA"
+"$BIN" show r1 "--store=$RA" > "$TMP/reassoc_k.br"
+contains "allow-reassoc: a non-reduction float add is left alone" "%add_v = add %add_in, %add_in_1 : f32" \
+  cat "$TMP/reassoc_k.br"
+contains "to-llvm: reassoc and contract become fast-math flags" "fadd reassoc contract float" \
+  "$BIN" to-llvm "$TMP/reassoc_k.br"
+printf 'func @f(%%a: index, %%b: index) -> index {\n  %%c = add %%a, %%b reassoc=true\n  return %%c\n}\n' > "$TMP/reassoc_int.br"
+contains "reassoc on integer arithmetic is refused" "reassoc applies to float arithmetic, not index" \
+  "$BIN" check "$TMP/reassoc_int.br"
 if [ -n "$TORCH_PY" ] && command -v clang >/dev/null 2>&1; then
   contains "end to end: the compiled PyTorch kernel matches torch" "match: torch and brrr agree" \
     "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e"
+  contains "end to end: with allow-reassoc it still matches torch" "match: torch and brrr agree" \
+    "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" --passes "lower-aten,allow-reassoc contract=true" \
+    --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e_reassoc"
 else
   echo "skip: end to end needs python with torch and clang"
 fi

@@ -924,6 +924,20 @@ std::vector<verify::Issue> Sema::check() {
       }
     }
 
+    // reassoc / contract permit float rounding changes; on anything else they
+    // would be a silent no-op, so they are refused.
+    for (const char* flag : {"reassoc", "contract"}) {
+      const AttrValue* a = n.findAttr(flag);
+      if (!a || n.numResults() != 1) continue;
+      const Type t = typeOf({n.id, 0});
+      const schema::Scalar* sc = t && !t->shaped ? reg_.findScalar(t->name) : nullptr;
+      if (!sc || sc->domain != "float") {
+        out.push_back({true, n.id, n.kind,
+                       std::string(flag) + " applies to float arithmetic, not " +
+                           (t ? printType(t) : std::string("an untyped value"))});
+      }
+    }
+
     // A memory access (`traits: access`): one index per dimension of the buffer,
     // each proven in bounds under the facts in scope. Unproven bounds go to
     // insert-guards like any other unproven equation.
