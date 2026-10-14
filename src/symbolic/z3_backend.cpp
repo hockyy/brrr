@@ -4,12 +4,26 @@
 
 #include <z3.h>
 
+#include <climits>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace brrr::symbolic::z3 {
 namespace {
 
-constexpr unsigned kTimeoutMs = 200;  // per check; a timeout is an honest Unknown
+// Calibrated over the test suite and the examples (docs/scratch/solver.md): the
+// most any check there consumes is about 570k (a degree-4 product in
+// 06_shapes.br); the default is about 10x that.
+constexpr uint64_t kDefaultRlimit = 6000000;
+// Far above what the rlimit allows; hitting it means the limit is miscalibrated.
+constexpr unsigned kSafetyNetMs = 10000;
+
+uint64_t g_rlimit = [] {
+  const char* v = std::getenv("BRRR_SOLVER_RLIMIT");
+  return v && *v ? std::strtoull(v, nullptr, 10) : kDefaultRlimit;
+}();
+Stats g_stats;
 
 bool g_error = false;
 void onError(Z3_context, Z3_error_code) { g_error = true; }
@@ -17,6 +31,8 @@ void onError(Z3_context, Z3_error_code) { g_error = true; }
 // One context for the process: ASTs are managed by it (non-rc context).
 Z3_context ctx() {
   static Z3_context c = [] {
+    Z3_global_param_set("smt.random_seed", "0");
+    Z3_global_param_set("sat.random_seed", "0");
     Z3_config cfg = Z3_mk_config();
     Z3_set_param_value(cfg, "model", "true");
     Z3_context made = Z3_mk_context(cfg);
@@ -105,6 +121,22 @@ Expr fromZ3(Z3_ast a) {
   }
 }
 
+// What one check consumed, from the solver's statistics.
+uint64_t rlimitUsed(Z3_solver s) {
+  Z3_context c = ctx();
+  Z3_stats st = Z3_solver_get_statistics(c, s);
+  Z3_stats_inc_ref(c, st);
+  uint64_t used = 0;
+  for (unsigned i = 0; i < Z3_stats_size(c, st); ++i) {
+    if (std::string(Z3_stats_get_key(c, st, i)) != "rlimit count") continue;
+    used = Z3_stats_is_uint(c, st, i)
+               ? Z3_stats_get_uint_value(c, st, i)
+               : static_cast<uint64_t>(Z3_stats_get_double_value(c, st, i));
+  }
+  Z3_stats_dec_ref(c, st);
+  return used;
+}
+
 }  // namespace
 
 bool available() { return true; }
@@ -115,37 +147,79 @@ std::string version() {
   return "z3 " + std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(build);
 }
 
+uint64_t rlimit() { return g_rlimit; }
+void setRlimit(uint64_t limit) { g_rlimit = limit; }
+const Stats& stats() { return g_stats; }
+
 struct Session::Impl {
-  Z3_solver solver;
-  Impl() {
-    Z3_context c = ctx();
-    solver = Z3_mk_solver(c);
-    Z3_solver_inc_ref(c, solver);
-    Z3_params p = Z3_mk_params(c);
-    Z3_params_inc_ref(c, p);
-    Z3_params_set_uint(c, p, Z3_mk_string_symbol(c, "timeout"), kTimeoutMs);
-    Z3_solver_set_params(c, solver, p);
-    Z3_params_dec_ref(c, p);
-  }
-  ~Impl() { Z3_solver_dec_ref(ctx(), solver); }
+  std::vector<Z3_ast> facts;  // in the order they were asserted
 
-  void add(Z3_ast f) { Z3_solver_assert(ctx(), solver, f); }
+  void add(Z3_ast f) { facts.push_back(f); }
 
-  // Satisfiable with `extra` added? FALSE / TRUE / UNDEF (timeout or error).
-  Z3_lbool checkWith(Z3_ast extra) {
+  // A fresh solver with the facts (and `extra`), checked once. FALSE / TRUE /
+  // UNDEF (limit, safety net, incompleteness, or an error). With `model`, a
+  // satisfying model is returned (the caller releases it).
+  Z3_lbool check(Z3_ast extra, Z3_model* model = nullptr) {
     Z3_context c = ctx();
     g_error = false;
-    Z3_solver_push(c, solver);
-    Z3_solver_assert(c, solver, extra);
-    const Z3_lbool r = Z3_solver_check(c, solver);
-    Z3_solver_pop(c, solver, 1);
+    Z3_solver s = Z3_mk_solver(c);
+    Z3_solver_inc_ref(c, s);
+    Z3_params p = Z3_mk_params(c);
+    Z3_params_inc_ref(c, p);
+    if (g_rlimit) {
+      const unsigned limit = g_rlimit > UINT_MAX ? UINT_MAX : static_cast<unsigned>(g_rlimit);
+      Z3_params_set_uint(c, p, Z3_mk_string_symbol(c, "rlimit"), limit);
+    }
+    Z3_params_set_uint(c, p, Z3_mk_string_symbol(c, "timeout"), kSafetyNetMs);
+    Z3_solver_set_params(c, s, p);
+    Z3_params_dec_ref(c, p);
+    for (Z3_ast f : facts) Z3_solver_assert(c, s, f);
+    if (extra) Z3_solver_assert(c, s, extra);
+    // The counter is the context's running total; a check's cost is the difference.
+    const uint64_t before = rlimitUsed(s);
+    const Z3_lbool r = Z3_solver_check(c, s);
+    ++g_stats.checks;
+    const uint64_t total = rlimitUsed(s);
+    const uint64_t used = total >= before ? total - before : total;
+    g_stats.last_rlimit_used = used;
+    if (used > g_stats.max_rlimit_used) g_stats.max_rlimit_used = used;
+    static const bool trace = [] {
+      const char* v = std::getenv("BRRR_SOLVER_STATS");
+      return v && std::string(v) == "2";
+    }();
+    if (trace) {
+      std::string q = extra ? Z3_ast_to_string(c, extra) : "(model)";
+      for (char& ch : q) ch = ch == '\n' ? ' ' : ch;
+      std::fprintf(stderr, "solver check: rlimit %llu  %s  %s\n",
+                   static_cast<unsigned long long>(used),
+                   r == Z3_L_TRUE ? "sat" : r == Z3_L_FALSE ? "unsat" : "unknown", q.c_str());
+    }
+    if (r == Z3_L_UNDEF) {
+      const std::string why = Z3_solver_get_reason_unknown(c, s);
+      if (why.find("resource") != std::string::npos) {
+        ++g_stats.resource_unknowns;
+      } else if (why.find("timeout") != std::string::npos ||
+                 why.find("canceled") != std::string::npos) {
+        if (g_stats.safety_net_hits++ == 0) {
+          std::fprintf(stderr,
+                       "solver: a check hit the %u ms wall-clock safety net, so its Unknown is "
+                       "not reproducible; lower BRRR_SOLVER_RLIMIT\n",
+                       kSafetyNetMs);
+        }
+      }
+    }
+    if (model && r == Z3_L_TRUE && !g_error) {
+      *model = Z3_solver_get_model(c, s);
+      Z3_model_inc_ref(c, *model);
+    }
+    Z3_solver_dec_ref(c, s);
     return g_error ? Z3_L_UNDEF : r;
   }
 
   Tri valid(Z3_ast q) {
     Z3_context c = ctx();
-    if (checkWith(Z3_mk_not(c, q)) == Z3_L_FALSE) return Tri::Yes;
-    if (checkWith(q) == Z3_L_FALSE) return Tri::No;
+    if (check(Z3_mk_not(c, q)) == Z3_L_FALSE) return Tri::Yes;
+    if (check(q) == Z3_L_FALSE) return Tri::No;
     return Tri::Unknown;
   }
 };
@@ -186,10 +260,8 @@ Tri Session::aligned(const Expr& e, int64_t modulus) {
 // A model gives a candidate value; it is the constant iff no other value fits.
 std::optional<int64_t> Session::constantValue(const Expr& e) {
   Z3_context c = ctx();
-  g_error = false;
-  if (Z3_solver_check(c, impl_->solver) != Z3_L_TRUE || g_error) return std::nullopt;
-  Z3_model m = Z3_solver_get_model(c, impl_->solver);
-  Z3_model_inc_ref(c, m);
+  Z3_model m = nullptr;
+  if (impl_->check(nullptr, &m) != Z3_L_TRUE || !m) return std::nullopt;
   Z3_ast v = nullptr;
   int64_t value = 0;
   const bool ok = Z3_model_eval(c, m, toZ3(e), true, &v) && v &&
@@ -214,6 +286,12 @@ namespace brrr::symbolic::z3 {
 
 bool available() { return false; }
 std::string version() { return "none"; }
+uint64_t rlimit() { return 0; }
+void setRlimit(uint64_t) {}
+const Stats& stats() {
+  static const Stats none;
+  return none;
+}
 
 struct Session::Impl {};
 Session::Session() = default;

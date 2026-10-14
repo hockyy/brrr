@@ -165,6 +165,39 @@ if "$BIN" passes 2>/dev/null | grep -q "solver: z3"; then
   contains "canonicalize: exact division" "%c = apply 3 + %i" "$BIN" show r1 "--store=$TMP/canon"
   contains "canonicalize: result dims too" "reshape %x : tensor<[128], f32>" "$BIN" show r1 "--store=$TMP/canon"
   contains "canonicalize: the signature stays as written" "%x: tensor<[%n], f32>" "$BIN" show r1 "--store=$TMP/canon"
+  # Determinism: answers do not depend on machine load. Check every file once
+  # alone, then four times in parallel (contending for the CPU): same output.
+  ALL=("$SHOWCASE"/*.br "$EXAMPLES"/*.br "$CASES"/*.br)
+  for f in "${ALL[@]}"; do "$BIN" check "$f"; done > "$TMP/det.seq" 2>&1
+  for k in 1 2 3 4; do
+    ( for f in "${ALL[@]}"; do "$BIN" check "$f"; done > "$TMP/det.$k" 2>&1 ) &
+  done
+  wait
+  same=1
+  for k in 1 2 3 4; do cmp -s "$TMP/det.seq" "$TMP/det.$k" || same=0; done
+  if [ "$same" = 1 ]; then pass "solver: identical answers under CPU contention"; else
+    flunk "solver: identical answers under CPU contention" "$(diff "$TMP/det.seq" "$TMP/det.1" | head)"; fi
+  contains "solver: a limit too small gives Unknown, not a guess" "warning" \
+    "$BIN" check "$SHOWCASE/06_shapes.br" --solver-rlimit=1 --strict
+  contains "passes reports the rlimit" "rlimit 6000000" "$BIN" passes
+
+  # Recorded answers: a branch replays them all and reaches the same state.
+  R="$TMP/rec"
+  contains "recorded: the run asks Z3" "answer(s) asked" \
+    "$BIN" run "$SHOWCASE/06_shapes.br" --passes=infer-shapes,canonicalize,insert-guards "--store=$R"
+  contains "recorded: the manifest names the solver" "solver z3" cat "$R/runs/r1/run.txt"
+  contains "recorded: a branch asks nothing new" "0 answer(s) asked" "$BIN" branch r1@0 "--store=$R"
+  if [ "$("$BIN" show r1 --ids "--store=$R")" = "$("$BIN" show r2 --ids "--store=$R")" ]; then
+    pass "recorded: the branch reaches the identical state"
+  else flunk "recorded: the branch reaches the identical state"; fi
+  contains "recorded: each stage counts its answers" "replayed" cat "$R/runs/r2/01-infer-shapes.txt"
+  contains "recorded: resuming under another limit says so" "was recorded with z3" \
+    "$BIN" resume r1 --passes=dce --solver-rlimit=5000 "--store=$R"
+  # Poison the store (every recorded Yes becomes No): replayed answers win, so
+  # the same input no longer verifies. This proves the store is consulted.
+  sed -i 's/ yes$/ no/' "$R/answers.txt"
+  contains "recorded: replayed answers are used (poisoned store)" "does not verify" \
+    "$BIN" run "$SHOWCASE/06_shapes.br" --passes=dce "--store=$R"
 else
   echo "skip: built without Z3 (solver checks and canonicalize)"
 fi

@@ -9,6 +9,13 @@
 // positive divisor); ceildiv(x, c) is -((-x) div c). Atoms are Int constants
 // named by their atom spelling (`%7`, `tile`, `?%7.0`).
 //
+// Determinism: every check runs on a fresh solver, given the facts in a fixed
+// order, under a deterministic resource limit (`rlimit`) and a fixed seed. An
+// answer is therefore a function of (Z3 version, limit, facts, question) alone:
+// not of machine load, and not of the questions asked before it. A wall-clock
+// safety net remains far above the limit; an answer it cuts short is counted as
+// nondeterministic (`stats().safety_net_hits`).
+//
 // Built only when CMake finds Z3 (BRRR_HAS_Z3); otherwise `available()` is
 // false and every query is Unknown.
 #pragma once
@@ -24,6 +31,21 @@ namespace brrr::symbolic::z3 {
 
 bool available();
 std::string version();
+
+// The per-check resource limit: BRRR_SOLVER_RLIMIT, else the calibrated default
+// (docs/scratch/solver.md). 0 means unlimited.
+uint64_t rlimit();
+void setRlimit(uint64_t limit);
+
+// Counters over the process, for calibration and reports (BRRR_SOLVER_STATS=1).
+struct Stats {
+  uint64_t checks = 0;
+  uint64_t last_rlimit_used = 0;   // what the latest check consumed
+  uint64_t max_rlimit_used = 0;    // the most any single check consumed
+  uint64_t resource_unknowns = 0;  // checks stopped by the rlimit (deterministic)
+  uint64_t safety_net_hits = 0;    // checks stopped by the wall clock (nondeterministic)
+};
+const Stats& stats();
 
 class Session {
  public:

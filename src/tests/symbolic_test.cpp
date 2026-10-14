@@ -2,11 +2,15 @@
 // answered mathematically, with tri-state results and honest Unknowns.
 #include <climits>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include "symbolic/expr_io.h"
 #include "symbolic/facts.h"
 #include "symbolic/symbolic.h"
+#include "symbolic/z3_backend.h"
 
 using namespace brrr::symbolic;
 
@@ -246,6 +250,73 @@ int main() {
     expect(t.constantValue(V("a")) == std::optional<int64_t>(4), "z3: 2a + b = 10, a - b = 2 => a == 4");
   } else {
     std::printf("      (built without Z3: z3 tests skipped)\n");
+  }
+
+  // 17. Determinism: a Z3 answer depends only on the facts and the question, not
+  //     on machine load or on the questions asked before it; answers recorded in
+  //     an AnswerCache are replayed.
+  if (backend() == Backend::Z3) {
+    Solver s;
+    s.assertLe(V("x"), V("y"));
+    s.assertLe(V("y"), V("z"));
+    expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "determinism: asked once");
+    const uint64_t first = z3::stats().last_rlimit_used;
+    for (int i = 0; i < 20; ++i) {
+      Solver o;
+      o.assertLe(V("p"), C(i));
+      o.assertEqual(Mul({V("q"), V("q")}), Add({V("p"), C(i)}));
+      (void)o.lessOrEqual(V("p"), C(i + 1));
+      (void)o.constantValue(V("q"));
+    }
+    expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "determinism: asked again");
+    std::printf("      (rlimit used: first %llu, again %llu)\n", (unsigned long long)first,
+                (unsigned long long)z3::stats().last_rlimit_used);
+    expect(first > 0 && z3::stats().last_rlimit_used == first,
+           "the same question costs the same rlimit, whatever was asked before");
+
+    const uint64_t saved = z3::rlimit();
+    z3::setRlimit(1);
+    bool all_unknown = true;
+    for (int i = 0; i < 5; ++i) all_unknown &= s.lessOrEqual(V("x"), V("z")) == Tri::Unknown;
+    z3::setRlimit(saved);
+    expect(all_unknown, "a limit too small for the work: Unknown, every time");
+    expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "the default limit decides it again");
+
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "brrr_answers_test.txt").string();
+    std::filesystem::remove(path);
+    {
+      AnswerCache cache;
+      setAnswerCache(&cache);
+      expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "recorded: the first answer is asked");
+      expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes && cache.asked() == 1 &&
+                 cache.replayed() == 1,
+             "recorded: the second is replayed");
+      expect(cache.appendNew(path), "recorded: written to the store");
+      setAnswerCache(nullptr);
+    }
+    {
+      std::ifstream in(path, std::ios::binary);
+      std::stringstream ss;
+      ss << in.rdbuf();
+      std::string text = ss.str();
+      const size_t at = text.find(" yes");
+      if (at != std::string::npos) text.replace(at, 4, " no");
+      std::ofstream(path, std::ios::binary | std::ios::trunc) << text;
+      AnswerCache poisoned;
+      poisoned.load(path);
+      setAnswerCache(&poisoned);
+      expect(s.lessOrEqual(V("x"), V("z")) == Tri::No,
+             "recorded: a replayed answer wins (poisoned on purpose)");
+      setAnswerCache(nullptr);
+      Solver more = s;
+      more.assertLe(V("z"), C(5));
+      setAnswerCache(&poisoned);
+      expect(more.lessOrEqual(V("x"), V("z")) == Tri::Yes,
+             "recorded: a new fact makes a new question");
+      setAnswerCache(nullptr);
+    }
+    std::filesystem::remove(path);
   }
 
   if (failures == 0) std::printf("\nall symbolic tests passed\n");

@@ -72,7 +72,8 @@ trusted. `canonicalize.cpp`, at about 80 lines, is a complete example.
 
 Runs live in `.brrr/` (or `--store=<dir>`): content-addressed states, one
 manifest per run, an editable `pipeline.txt` of passes still to run, and a record
-per stage (before/after, diff, journal, issues).
+per stage (before/after, diff, journal, issues), and `answers.txt`, the recorded
+solver answers that make branches and resumed runs replay exactly.
 
 ## Notes
 

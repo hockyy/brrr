@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iterator>
 
 namespace brrr::symbolic {
@@ -735,9 +736,92 @@ const char* backendName() {
 
 namespace {
 size_t g_disagreements = 0;
+AnswerCache* g_cache = nullptr;
+
+// Two independent FNV-1a passes: a 128-bit name for a question.
+std::string hashQuestion(const std::string& s) {
+  uint64_t h1 = 1469598103934665603ull, h2 = 0x6c62272e07bb0142ull;
+  for (const unsigned char c : s) {
+    h1 = (h1 ^ c) * 1099511628211ull;
+    h2 = (h2 ^ (c + 0x9eu)) * 0x100000001b3ull;
+  }
+  h2 ^= s.size();
+  char buf[33];
+  std::snprintf(buf, sizeof buf, "%016llx%016llx", static_cast<unsigned long long>(h1),
+                static_cast<unsigned long long>(h2));
+  return buf;
 }
 
+const char* triText(Tri t) {
+  return t == Tri::Yes ? "yes" : t == Tri::No ? "no" : "unknown";
+}
+Tri parseTri(const std::string& s) {
+  return s == "yes" ? Tri::Yes : s == "no" ? Tri::No : Tri::Unknown;
+}
+}  // namespace
+
 size_t solverDisagreements() { return g_disagreements; }
+
+std::optional<std::string> AnswerCache::find(const std::string& question) {
+  const auto it = answers_.find(hashQuestion(question));
+  if (it == answers_.end()) return std::nullopt;
+  ++replayed_;
+  return it->second;
+}
+
+void AnswerCache::put(const std::string& question, const std::string& answer) {
+  const std::string h = hashQuestion(question);
+  answers_[h] = answer;
+  fresh_.emplace_back(h, answer);
+  ++asked_;
+}
+
+bool AnswerCache::load(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return true;
+  std::string h, a;
+  while (in >> h >> a) answers_[h] = a;
+  return true;
+}
+
+bool AnswerCache::appendNew(const std::string& path) {
+  if (fresh_.empty()) return true;
+  std::ofstream out(path, std::ios::binary | std::ios::app);
+  if (!out) return false;
+  for (const auto& [h, a] : fresh_) out << h << " " << a << "\n";
+  fresh_.clear();
+  return static_cast<bool>(out);
+}
+
+void setAnswerCache(AnswerCache* cache) { g_cache = cache; }
+
+std::string Solver::recorded(const std::string& question,
+                             const std::function<std::string()>& ask) const {
+  if (!g_cache || backend() != Backend::Z3) return ask();
+  if (!facts_key_valid_) {
+    std::string k;
+    for (const auto& [a, b] : equalities_) k += "eq " + pretty(a) + " = " + pretty(b) + "\n";
+    for (const auto& [a, b] : le_facts_) k += "le " + pretty(a) + " <= " + pretty(b) + "\n";
+    for (const auto& [v, r] : ranges_) {
+      k += "range " + v + " " + std::to_string(r.first) + " " + std::to_string(r.second) + "\n";
+    }
+    for (const auto& [v, m, r] : mods_) {
+      k += "mod " + v + " " + std::to_string(m) + " " + std::to_string(r) + "\n";
+    }
+    facts_key_ = std::move(k);
+    facts_key_valid_ = true;
+  }
+  const std::string key = z3::version() + " rlimit " + std::to_string(z3::rlimit()) + "\n" +
+                          facts_key_ + "? " + question;
+  if (auto hit = g_cache->find(key)) return *hit;
+  std::string answer = ask();
+  g_cache->put(key, answer);
+  return answer;
+}
+
+Tri Solver::recordedTri(const std::string& question, const std::function<Tri()>& ask) const {
+  return parseTri(recorded(question, [&] { return std::string(triText(ask())); }));
+}
 
 Solver::LazySession::LazySession() = default;
 Solver::LazySession::~LazySession() = default;
@@ -772,22 +856,26 @@ Tri Solver::decide(Tri local, Tri z3, const char* what, const Expr& a, const Exp
 void Solver::assertEqual(const Expr& a, const Expr& b) {
   equalities_.emplace_back(a, b);
   subst_valid_ = false;
-  if (z3_.p) z3_.p->assertEqual(a, b);
+  z3_.p.reset();
+  facts_key_valid_ = false;
 }
 
 void Solver::assertRange(const std::string& var, int64_t lo, int64_t hi) {
   ranges_[var] = {lo, hi};
-  if (z3_.p) z3_.p->assertRange(var, lo, hi);
+  z3_.p.reset();
+  facts_key_valid_ = false;
 }
 
 void Solver::assertMod(const std::string& var, int64_t modulus, int64_t residue) {
   mods_.emplace_back(var, modulus, residue);
-  if (z3_.p) z3_.p->assertMod(var, modulus, residue);
+  z3_.p.reset();
+  facts_key_valid_ = false;
 }
 
 void Solver::assertLe(const Expr& a, const Expr& b) {
   le_facts_.emplace_back(a, b);
-  if (z3_.p) z3_.p->assertLe(a, b);
+  z3_.p.reset();
+  facts_key_valid_ = false;
 }
 
 // ---- questions --------------------------------------------------------------------
@@ -801,7 +889,9 @@ Tri Solver::isEqual(const Expr& a, const Expr& b) const {
   }
   switch (backend()) {
     case Backend::Local: return localIsEqual(a, b);
-    case Backend::Z3: return session().isEqual(a, b);
+    case Backend::Z3:
+      return recordedTri("== " + pretty(a) + " , " + pretty(b),
+                         [&] { return session().isEqual(a, b); });
     case Backend::Check: return decide(localIsEqual(a, b), session().isEqual(a, b), "==", a, b);
   }
   return Tri::Unknown;
@@ -812,7 +902,9 @@ Tri Solver::lessOrEqual(const Expr& a, const Expr& b) const {
   if (d && d->coeffs.empty()) return d->c <= 0 ? Tri::Yes : Tri::No;
   switch (backend()) {
     case Backend::Local: return localLessOrEqual(a, b);
-    case Backend::Z3: return session().lessOrEqual(a, b);
+    case Backend::Z3:
+      return recordedTri("<= " + pretty(a) + " , " + pretty(b),
+                         [&] { return session().lessOrEqual(a, b); });
     case Backend::Check:
       return decide(localLessOrEqual(a, b), session().lessOrEqual(a, b), "<=", a, b);
   }
@@ -824,7 +916,9 @@ Tri Solver::isLess(const Expr& a, const Expr& b) const {
   if (d && d->coeffs.empty()) return d->c < 0 ? Tri::Yes : Tri::No;
   switch (backend()) {
     case Backend::Local: return localIsLess(a, b);
-    case Backend::Z3: return session().isLess(a, b);
+    case Backend::Z3:
+      return recordedTri("< " + pretty(a) + " , " + pretty(b),
+                         [&] { return session().isLess(a, b); });
     case Backend::Check: return decide(localIsLess(a, b), session().isLess(a, b), "<", a, b);
   }
   return Tri::Unknown;
@@ -838,7 +932,9 @@ Tri Solver::aligned(const Expr& e, int64_t modulus) const {
   }
   switch (backend()) {
     case Backend::Local: return localAligned(e, modulus);
-    case Backend::Z3: return session().aligned(e, modulus);
+    case Backend::Z3:
+      return recordedTri("aligned " + pretty(e) + " , " + std::to_string(modulus),
+                         [&] { return session().aligned(e, modulus); });
     case Backend::Check:
       return decide(localAligned(e, modulus), session().aligned(e, modulus), "aligned to",
                     e, ExprTerm::constant(modulus));
@@ -849,7 +945,12 @@ Tri Solver::aligned(const Expr& e, int64_t modulus) const {
 std::optional<int64_t> Solver::constantValue(const Expr& e) const {
   if (const auto local = localConstantValue(e)) return local;  // a constant normal form
   if (backend() == Backend::Local) return std::nullopt;
-  return session().constantValue(e);
+  const std::string a = recorded("const " + pretty(e), [&] {
+    const auto v = session().constantValue(e);
+    return v ? std::to_string(*v) : std::string("none");
+  });
+  if (a == "none") return std::nullopt;
+  return std::stoll(a);
 }
 
 }  // namespace brrr::symbolic

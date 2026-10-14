@@ -10,6 +10,11 @@
 //     runs/<id>/run.txt        manifest: parent, input, status, stage lines
 //     runs/<id>/pipeline.txt   the passes still to run — edit it, then resume
 //     runs/<id>/NN-<pass>.txt  stage record: before/after, diff, journal, issues
+//     answers.txt              recorded solver answers, shared by every run
+//
+// Solver answers are recorded: with Z3 an answer is a function of its question
+// (see symbolic::AnswerCache), so a branch or a resumed run replays exactly the
+// answers the original run got. The manifest names the solver that answered.
 //
 // After each stage the state is verified (sema::verifyModule). A stage that
 // leaves errors is rolled back: the run stops at the old state, marked failed,

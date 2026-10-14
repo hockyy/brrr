@@ -671,6 +671,13 @@ into (backends, frontends) via adapters.
   integer expression (operands, list elements, result dims) to a constant pinned
   by the facts or to Z3's simplification. A rewrite is kept only when it is smaller
   and proven equal, so Z3's simplifier proposes and the solver checks.
+- 2026-10-14: **deterministic solver** (#2). A 200 ms wall-clock timeout made answers
+  depend on machine load. Now every check runs on a fresh solver, gets the facts in
+  canonical order, and is stopped by Z3's `rlimit` (default 6M, about 10x the suite's
+  costliest check), so an answer is a function of (Z3 version, limit, facts,
+  question). The run store records answers in `answers.txt` and replays them, so a
+  branch reproduces its parent exactly. Z3's "rlimit count" statistic is the
+  context's running total; a check's cost is the difference before and after it.
 - 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
   go brrr). Agents can read it, the solver backs its claims, and runs are recorded
   and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets

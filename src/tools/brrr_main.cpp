@@ -18,6 +18,7 @@
 #include "sema/sema.h"
 #include "symbolic/expr_io.h"
 #include "symbolic/facts.h"
+#include "symbolic/z3_backend.h"
 #include "verify/check.h"
 
 namespace {
@@ -145,6 +146,8 @@ int usage() {
     show <run>[@k] [--ids] [--record]
 
   flags: --schemas=<file> --include=<dir> --core-only --store=<dir>
+         --solver-rlimit=N   Z3's per-check resource limit (0 = none; env BRRR_SOLVER_RLIMIT)
+  env:   BRRR_SOLVER=z3|local|check   BRRR_SOLVER_STATS=1 (solver counters on exit)
 )USAGE";
   return 64;
 }
@@ -155,6 +158,14 @@ void printIssues(const std::vector<brrr::verify::Issue>& issues, bool warnings) 
     std::cout << (is.error ? "error: " : "warning: ") << "n" << is.node << " (" << is.kind
               << "): " << is.message << "\n";
   }
+}
+
+void printSolverStats() {
+  const brrr::symbolic::z3::Stats& st = brrr::symbolic::z3::stats();
+  std::cerr << "solver stats: " << st.checks << " z3 check(s), max rlimit used "
+            << st.max_rlimit_used << " (limit " << brrr::symbolic::z3::rlimit() << "), "
+            << st.resource_unknowns << " stopped by the limit, " << st.safety_net_hits
+            << " by the wall-clock safety net\n";
 }
 
 // root | @func | ^label | nID
@@ -198,6 +209,9 @@ int main(int argc, char** argv) {
 #endif
   using namespace brrr;
   if (argc < 2) return usage();
+  if (const char* v = std::getenv("BRRR_SOLVER_STATS"); v && *v && *v != '0') {
+    std::atexit(printSolverStats);
+  }
   const std::string cmd = argv[1];
 
   std::vector<std::string> positional;
@@ -219,6 +233,7 @@ int main(int argc, char** argv) {
     else if (val("--passes=", &v)) popts.passes = v;
     else if (val("--state=", &v)) popts.state_file = v;
     else if (val("--steps=", &v)) popts.steps = std::atoi(v.c_str());
+    else if (val("--solver-rlimit=", &v)) symbolic::z3::setRlimit(std::strtoull(v.c_str(), nullptr, 10));
     else if (a == "--pause-on-warning") popts.pause_on_warning = true;
     else if (a == "--ids") popts.ids = true;
     else if (a == "--record") popts.record = true;

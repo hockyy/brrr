@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -66,6 +67,27 @@ Backend backend();
 const char* backendName();
 size_t solverDisagreements();
 
+// Recorded answers. With Z3, an answer is a function of its question key (Z3
+// version, rlimit, the facts in order, the question; see z3_backend.h), so a run
+// store can record answers and replay them: a branch or a resumed run gets exactly
+// the answers the original got. Only the Z3 backend records; `check` re-asks.
+class AnswerCache {
+ public:
+  // `question` is the full key text; entries are stored by its 128-bit hash.
+  std::optional<std::string> find(const std::string& question);
+  void put(const std::string& question, const std::string& answer);
+  bool load(const std::string& path);       // a missing file is an empty cache
+  bool appendNew(const std::string& path);  // writes what was put since the last append
+  size_t replayed() const { return replayed_; }
+  size_t asked() const { return asked_; }
+
+ private:
+  std::map<std::string, std::string> answers_;  // hash -> answer
+  std::vector<std::pair<std::string, std::string>> fresh_;
+  size_t replayed_ = 0, asked_ = 0;
+};
+void setAnswerCache(AnswerCache* cache);  // nullptr: answers are not recorded
+
 // Facts, and Yes/No/Unknown questions about them. Two fast paths are theorems,
 // not searches, and always run first: equal polynomial normal forms (Yes) and a
 // nonzero constant difference (No). Everything else goes to the backend.
@@ -119,6 +141,9 @@ class Solver {
   };
   z3::Session& session() const;
   Tri decide(Tri local, Tri z3, const char* what, const Expr& a, const Expr& b) const;
+  // A Z3 answer, replayed from the AnswerCache when it holds the question.
+  std::string recorded(const std::string& question, const std::function<std::string()>& ask) const;
+  Tri recordedTri(const std::string& question, const std::function<Tri()>& ask) const;
 
   // Equalities oriented into `atom -> expression` with no atom on its own right
   // side and no mapped atom on any right side, so one pass substitutes fully.
@@ -133,7 +158,9 @@ class Solver {
   mutable std::map<std::string, Expr> subst_map_;
   mutable std::vector<std::pair<Expr, Expr>> residual_;  // equalities not oriented
   mutable bool subst_valid_ = false;
-  mutable LazySession z3_;
+  mutable LazySession z3_;  // dropped on every new fact, so Z3 sees facts in canonical order
+  mutable std::string facts_key_;
+  mutable bool facts_key_valid_ = false;
 };
 
 }  // namespace brrr::symbolic

@@ -118,8 +118,22 @@ struct StageRec {
   std::string what;  // `fold-reshape`, `input <file>`, `edit <file>`, `from r1@2`
 };
 
+// Who answers solver questions, as recorded in a run's manifest.
+std::string solverInfo() {
+  switch (symbolic::backend()) {
+    case symbolic::Backend::Z3:
+      return symbolic::z3::version() + " rlimit " + std::to_string(symbolic::z3::rlimit());
+    case symbolic::Backend::Check:
+      return "check (" + symbolic::z3::version() + ", answers not recorded)";
+    case symbolic::Backend::Local:
+      return "local";
+  }
+  return "?";
+}
+
 struct Run {
   std::string id;
+  std::string solver;  // solverInfo() when the run last executed
   std::string parent = "-";
   std::string input;
   std::string status;  // done | paused | failed
@@ -164,7 +178,7 @@ class Store {
 
   void save(const Run& r) const {
     std::string t = "run " + r.id + "\nparent " + r.parent + "\ninput " + r.input + "\nstatus " +
-                    r.status + "\nstate " + r.state + "\n";
+                    r.status + "\nstate " + r.state + "\nsolver " + r.solver + "\n";
     for (const StageRec& s : r.stages) {
       char ms[32];
       std::snprintf(ms, sizeof ms, "%.3f", s.ms);
@@ -211,6 +225,7 @@ class Store {
       if (key == "input") r->input = rest;
       if (key == "status") r->status = rest;
       if (key == "state") r->state = rest;
+      if (key == "solver") r->solver = rest;
     }
     std::string p;
     readText(runDir(id) / "pipeline.txt", &p);
@@ -303,7 +318,14 @@ class Runner {
       t += "journal " + j.action + " n" + std::to_string(j.id) + ": " + j.detail + "\n";
     }
     for (const auto& is : issues) t += "issue " + issueLine(is) + "\n";
+    if (cache_) {
+      t += "solver " + std::to_string(cache_->asked() - asked_) + " asked, " +
+           std::to_string(cache_->replayed() - replayed_) + " replayed\n";
+      asked_ = cache_->asked();
+      replayed_ = cache_->replayed();
+    }
     writeText(store_.runDir(run.id) / (std::string(num) + "-" + name + ".txt"), t);
+    if (cache_) cache_->appendNew(cache_path_.string());
 
     out_ << "  [" << rec.index << "] " << rec.what << "  " << rec.status << "  " << ms << " ms  +"
          << rec.added << " -" << rec.removed << " ~" << rec.changed;
@@ -378,7 +400,19 @@ class Runner {
     run.status = failed ? "failed" : run.pending.empty() ? "done" : "paused";
   }
 
+  // Record and replay solver answers in `path` from now on.
+  void recordAnswers(symbolic::AnswerCache* cache, const fs::path& path) {
+    cache_ = cache;
+    cache_path_ = path;
+    asked_ = cache->asked();
+    replayed_ = cache->replayed();
+  }
+
   void summary(const Run& run) {
+    if (cache_ && symbolic::backend() == symbolic::Backend::Z3) {
+      out_ << "solver: " << run.solver << ", " << cache_->asked() << " answer(s) asked, "
+           << cache_->replayed() << " replayed\n";
+    }
     const size_t at = run.stages.empty() ? 0 : run.stages.back().index;
     if (run.status == "done") {
       out_ << "status: done — final state " << run.id << "@" << at << " ("
@@ -405,6 +439,26 @@ class Runner {
   const Options& opts_;
   std::ostream& out_;
   size_t last_warnings_ = 0;
+  symbolic::AnswerCache* cache_ = nullptr;
+  fs::path cache_path_;
+  size_t asked_ = 0, replayed_ = 0;  // counters at the last stage record
+};
+
+// Installs a store's recorded answers for the lifetime of one command.
+struct RecordedAnswers {
+  symbolic::AnswerCache cache;
+  fs::path path;
+  explicit RecordedAnswers(const fs::path& store) : path(store / "answers.txt") {
+    cache.load(path.string());
+    symbolic::setAnswerCache(&cache);
+  }
+  ~RecordedAnswers() {
+    symbolic::setAnswerCache(nullptr);
+    if (cache.asked()) {
+      fs::create_directories(path.parent_path());
+      cache.appendNew(path.string());
+    }
+  }
 };
 
 bool pendingFromOptions(const Options& o, std::vector<Stage>* out, bool* given, std::string* err) {
@@ -454,7 +508,9 @@ int command(const std::string& cmd, const std::vector<std::string>& args, const 
     for (const passes::PassInfo& p : passes::registry()) {
       out << p.name << "\n    " << p.summary << "\n";
     }
-    out << "(solver: " << symbolic::backendName() << ", " << symbolic::z3::version() << ")\n";
+    out << "(solver: " << symbolic::backendName() << ", " << symbolic::z3::version();
+    if (symbolic::backend() != symbolic::Backend::Local) out << ", rlimit " << symbolic::z3::rlimit();
+    out << ")\n";
     return 0;
   }
 
@@ -525,6 +581,8 @@ int command(const std::string& cmd, const std::vector<std::string>& args, const 
       err << args[0] << ":" << pr.line << ": error: " << pr.error << "\n";
       return 1;
     }
+    RecordedAnswers answers(opts.store);
+    runner.recordAnswers(&answers.cache, answers.path);
     const auto issues = sema::verifyModule(pr.module, reg);
     if (verify::hasErrors(issues)) {
       for (const auto& is : issues) {
@@ -534,6 +592,7 @@ int command(const std::string& cmd, const std::vector<std::string>& args, const 
       return 1;
     }
     r.id = store.newRunId();
+    r.solver = solverInfo();
     r.input = args[0];
     r.state = store.put(printModule(pr.module, {true}));
     r.stages.push_back({0, "ok", "-", r.state, 0, pr.module.nodes.size(), 0, 0, "input " + args[0]});
@@ -557,6 +616,8 @@ int command(const std::string& cmd, const std::vector<std::string>& args, const 
       err << "error: " << (e.empty() ? "bad reference '" + args[0] + "'" : e) << "\n";
       return 1;
     }
+    RecordedAnswers answers(opts.store);
+    runner.recordAnswers(&answers.cache, answers.path);
     Run r;
     if (cmd == "resume") {
       if (k >= 0) {
@@ -567,12 +628,18 @@ int command(const std::string& cmd, const std::vector<std::string>& args, const 
       }
       r = src;
       out << "run " << r.id << " (resumed)\n";
+      if (!r.solver.empty() && r.solver != solverInfo()) {
+        out << "  note: " << r.id << " was recorded with " << r.solver << "; now " << solverInfo()
+            << ". Recorded answers still replay; new questions may be answered differently.\n";
+      }
+      r.solver = solverInfo();
     } else {
       if (k < 0 || k >= static_cast<long>(src.stages.size())) {
         err << "error: branch needs <run>@<stage> with stage in 0.." << src.stages.size() - 1 << "\n";
         return 64;
       }
       r.id = store.newRunId();
+      r.solver = solverInfo();
       r.parent = id + "@" + std::to_string(k);
       r.input = src.input;
       r.state = src.stages[k].after;
