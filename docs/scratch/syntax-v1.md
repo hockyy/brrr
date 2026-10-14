@@ -247,6 +247,35 @@ block. A branch condition is a fact on its edge (the true edge of
 block is reached by its initial values and by its back edge, so a loop invariant is
 proven by induction.
 
+Values are SSA, so a fact that holds in a block also holds in every block it
+**dominates**. An inner loop's block sees the outer loop's facts about `%i`
+without restating them. This is sound by induction: the first entry into a block
+D comes from a block D doesn't dominate, and a later entry (a back edge from a
+block D dominates) may assume what held on the previous entry.
+
+## Buffers
+
+A buffer is a shaped type, `buf<[dims], elem>` by convention (the name is free).
+It is row-major and contiguous, and its dims are expressions. The `mem` module
+(loaded with `std`) has four ops:
+
+```
+%b = alloc : buf<[8 * %t, 256], f32>
+%v = load %b, [%i, %k] : f32        # one index expression per dimension
+store %v, %b, [%i, %n]
+dealloc %b
+```
+
+**Every access is checked.** For each index, the solver must prove `0 <= index`
+and `index <= dim - 1` under the facts in scope:
+
+- a **No** is an error (`index 0 (%n) is out of bounds`);
+- an **Unknown** is a warning, and `insert-guards` turns it into runtime `guard`s;
+- proven accesses compile to plain `getelementptr inbounds`, with no checks.
+
+A specialized kernel is therefore both fast and safe. Any kind with the trait
+`access` and operands named `buf` and `at` gets the same check.
+
 ## Operands, expressions, attributes — the exact split
 
 Everything an op consumes is one of three things, decided by one question each:

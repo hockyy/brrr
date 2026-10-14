@@ -66,7 +66,78 @@ contains "schema extension: --schemas declares a kind" "errors: 0, warnings: 0" 
   "$BIN" check --schemas="$SCHEMAS/extra.bs" "$CASES/neg_ok.br"
 contains "schema extension: without it the kind is foreign" "unknown kind 'neg'" \
   "$BIN" check "$CASES/neg_ok.br"
+# A kernel with its own types and ops: a type name needs no declaration, and the
+# kernel's schema file gives its ops shape rules the solver checks.
+contains "custom types: a kernel's own types and ops verify" "errors: 0, warnings: 0" \
+  "$BIN" check "$EXAMPLES/custom_types.br" --schemas="$EXAMPLES/custom_types.bs"
+contains "custom types: the rule infers the accumulator type" "%acc = qmatmul : qtile<[%m, %n], i32>  (inferred)" \
+  "$BIN" types "$EXAMPLES/custom_types.br" --schemas="$EXAMPLES/custom_types.bs"
+sed 's/%acc = qmatmul %qa, %b .*/%acc = qmatmul %qa, %b : qtile<[%m, %k], i32>/' \
+  "$EXAMPLES/custom_types.br" > "$TMP/custom_bad.br"
+contains "custom types: shapes on custom types are still checked" "cannot prove %n == %k" \
+  "$BIN" check "$TMP/custom_bad.br" --schemas="$EXAMPLES/custom_types.bs"
 contains "include cycles are rejected" "include cycle" "$BIN" print "$CASES/cycle_a.br"
+
+# ---- PyTorch in: examples/kernel.py exports a kernel, Brrr re-proves its shapes --------
+TORCH_EX="$SRC/../examples"
+contains "pytorch: the exported kernel verifies" "errors: 0, warnings: 0" \
+  "$BIN" check "$TORCH_EX/kernel.br" --schemas="$TORCH_EX/aten.bs"
+contains "pytorch: torch's 8 * Dim(t) stays an expression" "%x: tensor<[8 * %t, 64], f32>" \
+  "$BIN" print "$TORCH_EX/kernel.br"
+contains "pytorch: torch's range is a fact" "fact 2 <= %t <= 512" "$BIN" print "$TORCH_EX/kernel.br"
+sed 's/%fc2_bias: tensor<\[64\], f32>/%fc2_bias: tensor<[32], f32>/' "$TORCH_EX/kernel.br" > "$TMP/kernel_bad.br"
+contains "pytorch: a wrong shape is caught by Brrr's own rules" "64 == 32 is false" \
+  "$BIN" check "$TMP/kernel_bad.br" --schemas="$TORCH_EX/aten.bs"
+TORCH_PY=""
+for p in python3 python; do
+  if "$p" -c "import torch" >/dev/null 2>&1; then TORCH_PY="$p"; break; fi
+done
+if [ -n "$TORCH_PY" ]; then
+  mkdir -p "$TMP/torch"
+  "$TORCH_PY" -I "$TORCH_EX/kernel.py" "$TMP/torch" >/dev/null 2>&1
+  if cmp -s "$TMP/torch/kernel.br" "$TORCH_EX/kernel.br" && cmp -s "$TMP/torch/aten.bs" "$TORCH_EX/aten.bs"; then
+    pass "pytorch: rerunning kernel.py reproduces the committed files"
+  else
+    flunk "pytorch: rerunning kernel.py reproduces the committed files" \
+      "$(diff "$TMP/torch/kernel.br" "$TORCH_EX/kernel.br" | head)"
+  fi
+else
+  echo "skip: no python with torch (kernel.py regeneration)"
+fi
+
+# lower-aten: the exported kernel becomes loop nests over buffers, every access
+# proven in bounds, and compiles.
+LK="$TMP/lowered"
+contains "lower-aten: the PyTorch kernel lowers" "lower-aten  ok" \
+  "$BIN" run "$TORCH_EX/kernel.br" --passes=lower-aten --schemas="$TORCH_EX/aten.bs" "--store=$LK"
+"$BIN" show r1 "--store=$LK" > "$TMP/kernel_lowered.br"
+contains "lower-aten: every load and store is proven in bounds" "errors: 0, warnings: 0" \
+  "$BIN" check "$TMP/kernel_lowered.br"
+contains "lower-aten: the result is an output buffer" "%out: buf<[8 * %t, 64], f32>) {" \
+  cat "$TMP/kernel_lowered.br"
+contains "lower-aten: each loop states its range" "fact 0 <= %linear_k <= 63" cat "$TMP/kernel_lowered.br"
+contains "lower-aten: linear reads w[n, k]" "load %fc1_weight, [%linear_n, %linear_k] : f32" \
+  cat "$TMP/kernel_lowered.br"
+contains "lower-aten: intermediates are freed" "dealloc %relu_buf" cat "$TMP/kernel_lowered.br"
+sed 's/aten.relu %linear/aten.gelu %linear/' "$TORCH_EX/kernel.br" > "$TMP/kernel_gelu.br"
+out="$("$BIN" run "$TMP/kernel_gelu.br" --passes=lower-aten --schemas="$TORCH_EX/aten.bs" "--store=$TMP/gelu" 2>&1)"
+if printf '%s' "$out" | grep -q "no lowering for 'aten.gelu' yet" && printf '%s' "$out" | grep -q "status: failed"; then
+  pass "lower-aten: an op without a lowering fails the stage, which is rolled back"
+else flunk "lower-aten: an op without a lowering fails the stage, which is rolled back" "$out"; fi
+if command -v clang >/dev/null 2>&1; then
+  "$BIN" to-llvm "$TMP/kernel_lowered.br" > "$TMP/kernel.ll"
+  if clang -O3 -c "$TMP/kernel.ll" -o "$TMP/kernel.o" >"$TMP/clang_k.log" 2>&1; then
+    pass "lower-aten: the lowered PyTorch kernel compiles with clang"
+  else flunk "lower-aten: the lowered PyTorch kernel compiles with clang" "$(cat "$TMP/clang_k.log")"; fi
+fi
+
+# End to end: PyTorch kernel -> lower-aten -> to-llvm -> clang -> the same numbers as torch.
+if [ -n "$TORCH_PY" ] && command -v clang >/dev/null 2>&1; then
+  contains "end to end: the compiled PyTorch kernel matches torch" "match: torch and brrr agree" \
+    "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e"
+else
+  echo "skip: end to end needs python with torch and clang"
+fi
 
 # ---- identity --------------------------------------------------------------------
 contains "clean form: an unnamed value prints as its id" "%5 = relu %sum" \
@@ -144,6 +215,46 @@ contains "cast: a sign change may wrap, so it is opaque" "-> Unknown" "$BIN" ask
 contains "reconcile-casts folds a round trip" "status: done" \
   "$BIN" run "$CASES/warn_unrealized_cast.br" --passes=reconcile-casts,dce "--store=$TMP/casts"
 contains "after reconcile-casts nothing remains" "  return %x" "$BIN" show r1 "--store=$TMP/casts"
+
+# ---- codegen: buffers proven in bounds, LLVM IR, compiled by clang -------------------
+CG="$SRC/tests/codegen"
+contains "bounds: every load in the loop is proven in bounds" "errors: 0, warnings: 0" \
+  "$BIN" check "$CG/dot.br"
+contains "bounds: nested loops (facts flow to dominated blocks)" "errors: 0, warnings: 0" \
+  "$BIN" check "$CG/matvec.br"
+sed 's/  fact 0 <= %i <= %n - 1/  fact 0 <= %i <= %n/; s/pred=lt/pred=le/' "$CG/dot.br" > "$TMP/dot_off.br"
+contains "bounds: an off-by-one loop is not proven" "cannot prove it is < %n" \
+  "$BIN" check "$TMP/dot_off.br"
+sed 's/%y = load %b, \[%i\]/%y = load %b, [%n]/' "$CG/dot.br" > "$TMP/dot_n.br"
+contains "bounds: a definite out-of-bounds access is an error" "is out of bounds" \
+  "$BIN" check "$TMP/dot_n.br"
+contains "bounds: an unproven access becomes runtime guards" "+2 -0" \
+  "$BIN" run "$CG/get.br" --passes=insert-guards "--store=$TMP/cg"
+"$BIN" show r1 "--store=$TMP/cg" > "$TMP/get_guarded.br"
+contains "to-llvm: block arguments become phis" "phi float [ 0x0000000000000000, %.entry ], [ %acc2, %loop ]" \
+  "$BIN" to-llvm "$CG/dot.br"
+contains "to-llvm: proven loads are plain inbounds addresses" "getelementptr inbounds float, ptr %a, i64 %i" \
+  "$BIN" to-llvm "$CG/dot.br"
+contains "to-llvm: row-major 2D addressing" "mul nsw i64 %i, %n" "$BIN" to-llvm "$CG/matvec.br"
+contains "to-llvm: tensor ops must be lowered first" "no LLVM lowering for 'matmul'" \
+  "$BIN" to-llvm "$SHOWCASE/06_shapes.br"
+if command -v clang >/dev/null 2>&1; then
+  for k in dot matvec sum_to_n; do "$BIN" to-llvm "$CG/$k.br" > "$TMP/$k.ll"; done
+  "$BIN" to-llvm "$TMP/get_guarded.br" > "$TMP/get.ll"
+  if clang -O2 "$TMP/dot.ll" "$TMP/matvec.ll" "$TMP/sum_to_n.ll" "$TMP/get.ll" "$CG/harness.c" \
+       -o "$TMP/harness.exe" >"$TMP/clang.log" 2>&1; then
+    pass "clang compiles the emitted LLVM IR"
+    contains "binary: dot product" "10100.0" "$TMP/harness.exe" dot
+    contains "binary: matrix-vector product" "20.0 60.0 100.0" "$TMP/harness.exe" matvec
+    contains "binary: sum_to_n(100)" "5050" "$TMP/harness.exe" sum
+    contains "binary: a guarded access in bounds" "30.0" "$TMP/harness.exe" get 2
+    status "binary: a guarded access out of bounds traps" 132 "$TMP/harness.exe" get 9
+  else
+    flunk "clang compiles the emitted LLVM IR" "$(cat "$TMP/clang.log")"
+  fi
+else
+  echo "skip: no clang (compiling the emitted LLVM IR)"
+fi
 
 # ---- the solver backend --------------------------------------------------------------
 if "$BIN" passes 2>/dev/null | grep -q "solver: z3"; then

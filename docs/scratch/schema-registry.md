@@ -63,7 +63,9 @@ for a conversion).
 
 `core` (scalars, `return`), `std` (`const`, `apply`, `add`/`sub`/`mul`, `icmp`,
 `select`, `dim`, `relu`, `cast`, `reshape`, `matmul`, `nonzero`, `guard`),
-`control` (`br`, `cond_br`, `loop`, `continue_if`). `brrr schema` prints them;
-`--schemas=<file>` adds kinds; `--core-only` drops `std` and `control`. A kind no
+`control` (`br`, `cond_br`, `loop`, `continue_if`), `mem` (`alloc`, `dealloc`,
+and `load`/`store`, whose trait `access` makes every index provable in bounds; see
+the spec's Buffers section). `brrr schema` prints them; `--schemas=<file>` adds
+kinds; `--core-only` drops `std`, `control` and `mem`. A kind no
 loaded schema declares is foreign: accepted, reported once as a warning, and not
 checked.
