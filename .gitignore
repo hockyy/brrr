@@ -36,3 +36,6 @@ docs/main.pdf
 
 # third-party downloads (Z3: see docs/scratch/solver.md)
 third_party/
+
+# Python bytecode (build.py imports kernel.py)
+__pycache__/
