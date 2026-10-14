@@ -181,6 +181,45 @@ contains "tile-linear: an unknown form is refused" "form must be inner or outer,
   "$BIN" run "$TORCH_EX/kernel.br" --passes="tile-linear form=sideways" \
   --schemas="$TORCH_EX/aten.bs" "--store=$TMP/tile_bad"
 
+# Niching 4: memory. fuse-epilogue folds relu and the residual add into the
+# linear stores; fuse-rows runs fc1 four rows at a time inside fc2's row loop.
+FU="$TMP/fuse"
+contains "fuse-epilogue + fuse-rows: the kernel lowers" "fuse-rows  ok" \
+  "$BIN" run "$TORCH_EX/kernel.br" --passes="tile-linear rows=4 cols=2,fuse-epilogue,fuse-rows,lower-aten" \
+  --schemas="$TORCH_EX/aten.bs" "--store=$FU"
+contains "fuse-epilogue: relu folds into fc1's store" "epilogue=relu: n9 (aten.relu) folded into the store" \
+  "$BIN" show r1@2 --record "--store=$FU"
+contains "fuse-epilogue: the residual add folds into fc2's store" "epilogue=add: n11 (aten.add) folded into the store" \
+  "$BIN" show r1@2 --record "--store=$FU"
+contains "fuse-rows: the record names the buffer that is gone" "its [8 * %t, 256] buffer is gone" \
+  "$BIN" show r1@3 --record "--store=$FU"
+"$BIN" show r1 "--store=$FU" > "$TMP/fused_k.br"
+contains "fuse-rows: every fused load and store is proven in bounds" "errors: 0, warnings: 0" \
+  "$BIN" check "$TMP/fused_k.br"
+if [ "$(grep -c ' = alloc ' "$TMP/fused_k.br")" = 1 ] &&
+  grep -qF "%linear_rows = alloc : buf<[4, 256], f32>" "$TMP/fused_k.br"; then
+  pass "fuse-rows: one 4 x 256 scratch is the kernel's only allocation"
+else flunk "fuse-rows: one 4 x 256 scratch is the kernel's only allocation" "$(grep ' alloc ' "$TMP/fused_k.br")"; fi
+contains "fuse-rows: fc2 reads fc1's rows from the scratch" "load %linear_rows, [3, %linear_1_k] : f32" \
+  cat "$TMP/fused_k.br"
+contains "fuse-epilogue: the residual is added at the store, into the output" \
+  "store %add_v, %out, [4 * %linear_1_ib, 2 * %linear_1_nb]" cat "$TMP/fused_k.br"
+sed 's/aten.linear %relu, %fc2_weight, %fc2_bias/& rows=2/' "$TORCH_EX/kernel.br" > "$TMP/rows2.br"
+contains "fuse-rows: layers with different row tiles are refused" \
+  "with rows=1, but it has rows=2; tile both with the same rows" \
+  "$BIN" run "$TMP/rows2.br" --passes="fuse-epilogue,fuse-rows" --schemas="$TORCH_EX/aten.bs" "--store=$TMP/rows2"
+sed 's/aten.linear %relu, %fc2_weight, %fc2_bias/& rows=3/' "$TORCH_EX/kernel.br" > "$TMP/rows3.br"
+contains "lower-aten: a hand-written tile is proven too" "rows=3 is not proven to divide 8 * %t" \
+  "$BIN" run "$TMP/rows3.br" --passes=lower-aten --schemas="$TORCH_EX/aten.bs" "--store=$TMP/rows3"
+sed 's/aten.linear %relu, %fc2_weight, %fc2_bias/& epilogue="relu"/' "$TORCH_EX/kernel.br" > "$TMP/ep_stale.br"
+contains "lower-aten: an epilogue that no longer holds is refused" "epilogue step 'relu' no longer holds: its reader is add" \
+  "$BIN" run "$TMP/ep_stale.br" --passes=lower-aten --schemas="$TORCH_EX/aten.bs" "--store=$TMP/ep_stale"
+printf 'func @f(%%x: tensor<[4, 8], f32>, %%w: tensor<[8, 8], f32>, %%b: tensor<[8], f32>) -> tensor<[4, 8], f32> {\n  %%l = aten.linear %%x, %%w, %%b : tensor<[4, 8], f32>\n  %%r = aten.relu %%x : tensor<[4, 8], f32>\n  %%a = aten.add %%l, %%r : tensor<[4, 8], f32>\n  return %%a\n}\n' > "$TMP/late.br"
+"$BIN" run "$TMP/late.br" --passes="fuse-epilogue,lower-aten" --schemas="$TORCH_EX/aten.bs" "--store=$TMP/late" >/dev/null 2>&1
+contains "fuse-epilogue: an add whose other operand comes later is not folded, and says why" \
+  "not fused: n7 (aten.add): its other operand is computed after the linear" \
+  "$BIN" show r1@1 --record "--store=$TMP/late"
+
 if [ -n "$TORCH_PY" ] && command -v clang >/dev/null 2>&1; then
   contains "end to end: the compiled PyTorch kernel matches torch" "match: torch and brrr agree" \
     "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e"
@@ -194,6 +233,14 @@ if [ -n "$TORCH_PY" ] && command -v clang >/dev/null 2>&1; then
     "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" \
     --passes "tile-linear rows=4 cols=16 form=outer,lower-aten,allow-reassoc reassoc=false contract=true" \
     --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e_tile_outer"
+  contains "end to end: fused (epilogues, rows) still matches torch" "match: torch and brrr agree" \
+    "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" \
+    --passes "tile-linear rows=4 cols=2,fuse-epilogue,fuse-rows,lower-aten,allow-reassoc contract=true" \
+    --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e_fused"
+  contains "end to end: fused, outer form, still matches torch" "match: torch and brrr agree" \
+    "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" \
+    --passes "tile-linear rows=4 cols=16 form=outer,fuse-epilogue,fuse-rows,lower-aten" \
+    --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e_fused_outer"
 else
   echo "skip: end to end needs python with torch and clang"
 fi

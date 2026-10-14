@@ -147,8 +147,59 @@ per call: 9 MB at 4096 tokens (the fc1 output, the relu output, the fc2 output).
 On Windows, frees that size go back to the OS, so each call page-faults all of it
 in again. Relinking the same `.ll` with a malloc that reuses buffers between
 calls gives 0.026 / 0.27 / 2.30 ms, level with torch on one thread. That is the
-next niche (#28): epilogue fusion, row-block fusion of the two layers, and a
-caller-provided workspace.
+next niche (#28).
+
+## Niching 4: memory (`fuse-epilogue`, `fuse-rows`)
+
+Two schedules on `aten.linear`. Like `tile-linear`, each records a decision as an
+attribute, and `lower-aten` realizes it.
+
+**`fuse-epilogue`** follows a linear's result through its readers. A reader
+joins the chain when:
+
+- it is the only reader of the value before it;
+- it is `aten.relu`, or `aten.add` / `aten.mul` whose other operand already
+  exists before the linear runs (an argument, or an earlier op).
+
+The pass records `epilogue="relu"` (or `"relu,add"`, a chain) and journals what it
+folded. A near miss is journaled too, for example `not fused: n7 (aten.add): its
+other operand is computed after the linear`. `lower-aten` applies the chain to
+each accumulator right before the store and stores into the last op's buffer. No
+value inside the chain gets a buffer. In the FFN, fc2's chain ends at the
+returned add, so fc2 writes `x + acc` straight into `%out`.
+
+**`fuse-rows`**: when a linear's input is another linear's chain result, it is
+the only reader, and both have the same `rows`, the consumer gets
+`fuse_rows=true`. `lower-aten` then emits one row-block loop. Inside it, the
+producer's column tiles write its R rows (after its epilogue) into an `R x N`
+scratch, `%linear_rows = alloc : buf<[4, 256], f32>`, indexed by the tile row
+alone (`[3, 2 * %linear_nb + 1]`). Then the consumer reads them from there.
+
+`lower-aten` re-checks every schedule it realizes, the same way the pass decided
+it (`passes/linear_chain.h`):
+
+- an epilogue that no longer holds fails the stage: `epilogue step 'relu' no
+  longer holds: its reader is add`;
+- so does a `fuse_rows` with mismatched rows;
+- so does a tile that isn't proven to divide its dim: `rows=3 is not proven to
+  divide 8 * %t`.
+
+A hand edit can't get a wrong schedule past it.
+
+| pipeline (ms; one thread) | 32 | 512 | 4096 |
+|---|---|---|---|
+| `tile-linear rows=4 cols=2,lower-aten,allow-reassoc contract=true` | 0.038 | 0.52 | 3.85 |
+| `tile-linear rows=4 cols=2,fuse-epilogue,lower-aten,allow-reassoc contract=true` | 0.017 | 0.26 | 2.61 |
+| `tile-linear rows=4 cols=2,fuse-epilogue,fuse-rows,lower-aten,allow-reassoc contract=true` | **0.016** | **0.26** | **2.07** |
+| `tile-linear rows=4 cols=16 form=outer,fuse-epilogue,fuse-rows,lower-aten,allow-reassoc reassoc=false contract=true` | 0.068 | 0.39 | 2.75 |
+| torch, one thread | 0.028 | 0.27 | 2.28 |
+| torch, all threads | 0.027 | 0.08 | 0.26 |
+
+Run to run, the noise is about ±10%. `rows=2 cols=4` lands within it (1.96–2.36
+ms at 4096); 1-row tiles and wider column tiles are slower. The kernel's only
+allocation is the 4 KB scratch, plus `form=outer`'s 64 KB weight transposes,
+which are served from the heap's free lists. So the workspace argument planned
+in #28 isn't needed yet.
 
 ## Not yet
 
