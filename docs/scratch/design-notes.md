@@ -704,6 +704,12 @@ into (backends, frontends) via adapters.
   abs err <= 6e-7) and timed. Baseline with naive loops: 34.5 ms at 4096 tokens, against
   2.4 ms for torch on one thread. The gap is unvectorized float reductions (no reassoc),
   no tiling, and no use of facts. This is what niching starts from.
+- 2026-10-14: **niching 1: reassoc** (#24). Float ops take `reassoc`/`contract` (LLVM
+  fast-math flags), refused on non-floats. `allow-reassoc` grants `reassoc` to loop
+  reductions only (a float add whose sum flows back into its block argument), and each
+  grant is journaled. 4096 tokens: 34.5 ms -> about 6.3 ms (5.5x), still matching torch
+  within 6e-7. `contract` (FMA) and a 512-token specialization measured no consistent
+  gain: the loop is load-bound, which is what register blocking (#25) fixes.
 - 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
   go brrr). Agents can read it, the solver backs its claims, and runs are recorded
   and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets

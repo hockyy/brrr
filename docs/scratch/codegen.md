@@ -82,6 +82,27 @@ The naive loops are about 15× slower than single-threaded torch at 4096 tokens:
 This is the starting point the agent's niching improves on, with each step
 recorded as a run.
 
+## Niching 1: `allow-reassoc`
+
+Float `add`/`sub`/`mul` accept `reassoc=true` and `contract=true`. `to-llvm` emits
+them as LLVM fast-math flags (`fadd reassoc contract`). On anything that isn't a
+float they are refused, so they can never be a silent no-op.
+
+The pass `allow-reassoc` grants `reassoc` to loop reductions. A reduction is a
+float add that reads a block argument and whose sum a branch passes back into
+that argument. With `contract=true`, the add and the multiply feeding it also get
+`contract`. Each grant is journaled, so the stage record says which ops may round
+differently and why.
+
+| pipeline, 4096 tokens | ms | |
+|---|---|---|
+| `lower-aten` | 34.5 | baseline |
+| `lower-aten,allow-reassoc` | 6.1–6.8 | about 5.5× faster: the vectorized reductions |
+| `lower-aten,allow-reassoc contract=true` | 6.1–6.9 | no consistent change: the loop is now load-bound |
+
+Every variant still matches torch within 6e-7. The next step is register-block
+tiling (#25), which reuses loaded values.
+
 ## Not yet
 
 - **Other tensor-level ops** (`matmul`, and ATen ops beyond linear/relu/add/mul): lower them to loops first.

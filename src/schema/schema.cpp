@@ -453,9 +453,12 @@ kind const {
 
 # Integer meanings need "cannot wrap": always for index, and for iN/uN only when
 # the op says so (nsw = no signed wrap, nuw = no unsigned wrap).
+# On floats, reassoc=true lets the compiler reorder a sum or product (a vector
+# reduction, several accumulators) and contract=true lets a * b + c fuse into one
+# FMA. Both change rounding in the last bits, so they are explicit and per op.
 kind binary {
   operands: lhs, rhs
-  attrs: nsw?: bool, nuw?: bool
+  attrs: nsw?: bool, nuw?: bool, reassoc?: bool, contract?: bool
   shape: S, S -> S
   traits: pure
 }

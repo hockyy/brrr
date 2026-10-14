@@ -6,6 +6,7 @@ The whole path, one command:
 
     kernel.br (from kernel.py, torch.export)
       -> brrr run --passes=lower-aten        loop nests over buffers, every access proven in bounds
+                                             (--passes: any pipeline, e.g. "lower-aten,allow-reassoc")
       -> brrr to-llvm                        LLVM IR text
       -> clang -O3 -march=native             a native binary (with harness.c)
       -> run against torch's own output      max abs error, and time per call vs torch
@@ -68,6 +69,8 @@ def main():
     ap.add_argument("--reps", type=int, default=20)
     ap.add_argument("--work", help="keep the intermediate files here")
     ap.add_argument("--no-torch-timing", action="store_true")
+    ap.add_argument("--passes", default="lower-aten",
+                    help='the Brrr pipeline, comma-separated, e.g. "lower-aten,allow-reassoc contract=true"')
     args = ap.parse_args()
 
     import torch
@@ -78,7 +81,7 @@ def main():
     os.makedirs(work, exist_ok=True)
     store = os.path.join(work, "store")
 
-    sh([brrr, "run", os.path.join(HERE, "kernel.br"), "--passes=lower-aten",
+    sh([brrr, "run", os.path.join(HERE, "kernel.br"), "--passes=" + args.passes,
         "--schemas=" + os.path.join(HERE, "aten.bs"), "--store=" + store])
     lowered = os.path.join(work, "kernel_lowered.br")
     sh([brrr, "show", "r1", "--store=" + store], out=lowered)
@@ -86,6 +89,7 @@ def main():
     sh([brrr, "to-llvm", lowered], out=ll)
     exe = os.path.join(work, "kernel.exe")
     sh(["clang", "-O3", "-march=native", "-w", ll, os.path.join(HERE, "harness.c"), "-o", exe])
+    print("pipeline: %s" % args.passes)
     print("compiled: %s" % exe)
 
     print("%8s  %12s  %12s  %12s  %12s" % ("tokens", "max abs err", "brrr ms", "torch ms", "torch 1t ms"))
