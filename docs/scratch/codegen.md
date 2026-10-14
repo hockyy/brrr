@@ -29,9 +29,34 @@ clang -O3 -march=native dot.ll harness.c -o dot
 | `guard a, b rel=le` | `icmp sle` and a branch to a block that calls `llvm.trap` |
 | `return` | `ret` |
 
+## From PyTorch: `lower-aten`
+
+The `lower-aten` pass turns the frontend's ATen ops into loop nests over buffers:
+
+```
+brrr run examples/kernel.br --passes=lower-aten --schemas=examples/aten.bs
+```
+
+- **Signature.** Tensor arguments become buffers. The result becomes an output
+  buffer argument (destination-passing), and the returned value is computed
+  straight into it. Intermediates are `alloc`ed and freed at the end.
+- **`aten.linear`:** `for i < B, n < N: acc = b[n]; for k < K: acc += x[i,k] * w[n,k]; out[i,n] = acc`.
+  The accumulator is a block argument.
+- **`aten.relu`, `aten.add`, `aten.mul`:** elementwise loops over every dimension.
+- **Every loop** comes from `Builder::countedLoop`: a zero-trip check, then a header
+  whose fact `0 <= iv <= bound - 1` is proven on both edges into it. With facts
+  flowing to dominated blocks, every generated load and store is proven in bounds,
+  and the lowered kernel verifies with no warnings.
+- **An op without a lowering** fails the pass and names the op. The run store rolls
+  the stage back.
+
+The lowered feed-forward block compiles with clang `-O3`. Against PyTorch's own
+output (t = 4, 32 tokens) the maximum absolute error is 4.8e-7. The harness and the
+timing are tracked in #20.
+
 ## Not yet
 
-- **Tensor-level ops** (`matmul`, ATen ops): lower them to loops over buffers first (#19).
+- **Other tensor-level ops** (`matmul`, and ATen ops beyond linear/relu/add/mul): lower them to loops first.
 - **Structured `loop` regions:** write the loop as blocks.
 - **Facts are not emitted.** Later they become `llvm.assume`, `!range`, `noalias` and `align`, so what Brrr proved turns into LLVM optimizations.
 - **Vector types and parallel loops.**

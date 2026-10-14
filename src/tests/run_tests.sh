@@ -95,6 +95,32 @@ else
   echo "skip: no python with torch (kernel.py regeneration)"
 fi
 
+# lower-aten: the exported kernel becomes loop nests over buffers, every access
+# proven in bounds, and compiles.
+LK="$TMP/lowered"
+contains "lower-aten: the PyTorch kernel lowers" "lower-aten  ok" \
+  "$BIN" run "$TORCH_EX/kernel.br" --passes=lower-aten --schemas="$TORCH_EX/aten.bs" "--store=$LK"
+"$BIN" show r1 "--store=$LK" > "$TMP/kernel_lowered.br"
+contains "lower-aten: every load and store is proven in bounds" "errors: 0, warnings: 0" \
+  "$BIN" check "$TMP/kernel_lowered.br"
+contains "lower-aten: the result is an output buffer" "%out: buf<[8 * %t, 64], f32>) {" \
+  cat "$TMP/kernel_lowered.br"
+contains "lower-aten: each loop states its range" "fact 0 <= %linear_k <= 63" cat "$TMP/kernel_lowered.br"
+contains "lower-aten: linear reads w[n, k]" "load %fc1_weight, [%linear_n, %linear_k] : f32" \
+  cat "$TMP/kernel_lowered.br"
+contains "lower-aten: intermediates are freed" "dealloc %relu_buf" cat "$TMP/kernel_lowered.br"
+sed 's/aten.relu %linear/aten.gelu %linear/' "$TORCH_EX/kernel.br" > "$TMP/kernel_gelu.br"
+out="$("$BIN" run "$TMP/kernel_gelu.br" --passes=lower-aten --schemas="$TORCH_EX/aten.bs" "--store=$TMP/gelu" 2>&1)"
+if printf '%s' "$out" | grep -q "no lowering for 'aten.gelu' yet" && printf '%s' "$out" | grep -q "status: failed"; then
+  pass "lower-aten: an op without a lowering fails the stage, which is rolled back"
+else flunk "lower-aten: an op without a lowering fails the stage, which is rolled back" "$out"; fi
+if command -v clang >/dev/null 2>&1; then
+  "$BIN" to-llvm "$TMP/kernel_lowered.br" > "$TMP/kernel.ll"
+  if clang -O3 -c "$TMP/kernel.ll" -o "$TMP/kernel.o" >"$TMP/clang_k.log" 2>&1; then
+    pass "lower-aten: the lowered PyTorch kernel compiles with clang"
+  else flunk "lower-aten: the lowered PyTorch kernel compiles with clang" "$(cat "$TMP/clang_k.log")"; fi
+fi
+
 # ---- identity --------------------------------------------------------------------
 contains "clean form: an unnamed value prints as its id" "%5 = relu %sum" \
   "$BIN" print "$SHOWCASE/01_identity.br"

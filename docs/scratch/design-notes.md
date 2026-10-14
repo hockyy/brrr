@@ -678,6 +678,11 @@ into (backends, frontends) via adapters.
   compiles to bare `getelementptr inbounds`. Facts now flow to dominated blocks (SSA,
   by induction for loops), so nested loops prove their accesses without restating
   outer facts. First binaries: dot, matvec and sum_to_n, run against expected values.
+- 2026-10-14: **lower-aten** (#19). The first compiled PyTorch kernel: the frontend's
+  ATen ops lower to loop nests over buffers through a small core IR builder
+  (`ir/builder.h`: ops in program order, unique names and labels, a counted loop whose
+  range fact is proven on both edges). The lowered feed-forward block verifies with
+  zero bounds warnings, compiles with clang -O3, and matches torch within 4.8e-7.
 - 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
   go brrr). Agents can read it, the solver backs its claims, and runs are recorded
   and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets
