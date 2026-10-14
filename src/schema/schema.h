@@ -95,10 +95,12 @@ bool parseSchema(const std::string& text, Registry* reg, std::string* err);
 std::string printKind(const Kind& k);
 
 // The standard vocabulary ships as modules: `core` (scalars, return), `std`
-// (arithmetic, tensors), `control` (branches, loops).
+// (arithmetic, tensors), `control` (branches, loops), `mem` (buffers, loaded
+// with std).
 std::string coreSchemaText();
 std::string stdSchemaText();
 std::string controlSchemaText();
+std::string memSchemaText();
 Registry buildRegistry(bool std_kinds, bool control_kinds);
 
 // Structural kinds are part of the language, not the vocabulary.

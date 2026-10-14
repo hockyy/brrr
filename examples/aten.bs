@@ -1,0 +1,21 @@
+# ATen ops used by examples/kernel.br, as Brrr schema data (written by kernel.py).
+# A rule lets Brrr re-prove the shapes torch inferred; an op without one keeps
+# torch's annotated types and is checked for arity only.
+
+kind aten.add {
+  operands: self, other
+  shape: S, S -> S
+  traits: pure
+}
+
+kind aten.linear {
+  operands: input, weight, bias
+  shape: [B, K], [N, K], [N] -> [B, N]
+  traits: pure
+}
+
+kind aten.relu {
+  operands: self
+  shape: S -> S
+  traits: pure
+}

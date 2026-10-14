@@ -309,6 +309,18 @@ symbolic::Solver Sema::build(NodeId scope, size_t stop_fact) {
     x = nx ? nx->scope : kInvalidId;
   }
   chain.insert(chain.begin(), kInvalidId);
+  // Values are SSA: a fact that holds in a block holds in every block it
+  // dominates. So the innermost block's dominators contribute their facts too.
+  // Sound by induction for loops: the first entry into a block D comes from a
+  // block D does not dominate, and a later entry (a back edge from a block D
+  // dominates) may assume what held on the previous entry.
+  for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+    const Node* nb = m_.find(*it);
+    if (!nb || nb->kind != "block") continue;
+    const std::vector<NodeId> doms = dominatingBlocks(*it);
+    chain.insert(chain.begin() + 1, doms.begin(), doms.end());
+    break;
+  }
   for (const NodeId sc : chain) {
     for (size_t i = 0; i < m_.facts.size(); ++i) {
       const Module::FactEntry& f = m_.facts[i];
@@ -328,6 +340,57 @@ symbolic::Solver Sema::build(NodeId scope, size_t stop_fact) {
     }
   }
   return s;
+}
+
+const std::vector<NodeId>& Sema::dominatingBlocks(NodeId block) {
+  if (const auto it = dominators_.find(block); it != dominators_.end()) return it->second;
+  const Node* b = m_.find(block);
+  const NodeId fn = b ? b->scope : kInvalidId;  // a block's scope is its function
+  // The function's CFG: its own scope is the entry, then every block.
+  std::vector<NodeId> nodes{fn};
+  for (NodeId c : m_.childrenOf(fn)) {
+    if (const Node* n = m_.find(c); n && n->kind == "block") nodes.push_back(c);
+  }
+  std::map<NodeId, std::vector<NodeId>> preds;
+  for (const NodeId from : nodes) {
+    for (NodeId c : m_.childrenOf(from)) {
+      const Node* n = m_.find(c);
+      if (!n) continue;
+      for (const Successor& s : n->successors) preds[s.block].push_back(from);
+    }
+  }
+  // Iterative dominator sets: Dom(entry) = {entry}; Dom(b) = {b} + the
+  // intersection over b's predecessors. Unreachable blocks keep only themselves.
+  const std::set<NodeId> all(nodes.begin(), nodes.end());
+  std::map<NodeId, std::set<NodeId>> dom;
+  for (const NodeId n : nodes) dom[n] = n == fn || preds[n].empty() ? std::set<NodeId>{n} : all;
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (const NodeId n : nodes) {
+      if (n == fn || preds[n].empty()) continue;
+      std::set<NodeId> d = dom[preds[n][0]];
+      for (const NodeId p : preds[n]) {
+        std::set<NodeId> keep;
+        for (const NodeId x : d) {
+          if (dom[p].count(x)) keep.insert(x);
+        }
+        d = std::move(keep);
+      }
+      d.insert(n);
+      if (d != dom[n]) {
+        dom[n] = std::move(d);
+        changed = true;
+      }
+    }
+  }
+  for (const NodeId n : nodes) {
+    std::vector<NodeId> strict;
+    for (const NodeId d : nodes) {  // program order
+      if (d != n && d != fn && dom[n].count(d)) strict.push_back(d);
+    }
+    dominators_[n] = std::move(strict);
+  }
+  return dominators_[block];
 }
 
 // The relation a branch condition implies on the edge taken when cond == polarity.
@@ -739,6 +802,69 @@ void Sema::judge(const Node& n, NodeId scope, const std::vector<Obligation>& obs
 
 // ---- judgments --------------------------------------------------------------
 
+void Sema::checkAccess(const Node& n, const schema::Kind& k, std::vector<verify::Issue>* out) {
+  int bi = -1, ai = -1;
+  for (size_t i = 0; i < k.operands.size(); ++i) {
+    if (k.operands[i] == "buf") bi = static_cast<int>(i);
+    if (k.operands[i] == "at") ai = static_cast<int>(i);
+  }
+  if (bi < 0 || ai < 0 || static_cast<size_t>(std::max(bi, ai)) >= n.operands.size()) return;
+  const Operand& bop = n.operands[bi];
+  if (bop.kind != Operand::Kind::Value) {
+    out->push_back({true, n.id, n.kind, "the buffer operand must be a value"});
+    return;
+  }
+  const Type bt = typeOf(bop.value);
+  if (!bt || !bt->shaped) {
+    out->push_back({true, n.id, n.kind, "accesses a value that is not a buffer"});
+    return;
+  }
+  const Operand& at = n.operands[ai];
+  std::vector<Expr> idx;
+  if (at.kind == Operand::Kind::Value) idx.push_back(ExprTerm::var(valueAtom(at.value)));
+  else idx = at.exprs;
+  if (idx.size() != bt->dims.size()) {
+    out->push_back({true, n.id, n.kind,
+                    std::to_string(idx.size()) + " index(es) for a rank-" +
+                        std::to_string(bt->dims.size()) + " buffer"});
+    return;
+  }
+  // The element type: a load's result, a store's value.
+  if (n.numResults() == 1) {
+    const Type t = n.typeOf(0);
+    if (!t) {
+      out->push_back({true, n.id, n.kind, "needs a result type (the element type " + bt->elem + ")"});
+    } else if (t->shaped || printType(t) != bt->elem) {
+      out->push_back({true, n.id, n.kind,
+                      "result type " + printType(t) + " is not the element type " + bt->elem});
+    }
+  }
+  const symbolic::Solver& s = solverFor(n.scope);
+  const Expr zero = ExprTerm::constant(0);
+  for (size_t d = 0; d < idx.size(); ++d) {
+    const std::string what = "index " + std::to_string(d) + " (" + show(idx[d]) + ")";
+    const Expr last = ExprTerm::add({bt->dims[d], ExprTerm::constant(-1)});
+    const Tri lo = s.lessOrEqual(zero, idx[d]);
+    if (lo == Tri::No) {
+      out->push_back({true, n.id, n.kind, what + " is negative"});
+    } else if (lo == Tri::Unknown) {
+      out->push_back({false, n.id, n.kind,
+                      what + ": cannot prove it is >= 0 (add a fact, or run insert-guards)"});
+      unproven_.push_back({n.id, zero, idx[d], what + " >= 0", "le"});
+    }
+    const Tri hi = s.lessOrEqual(idx[d], last);
+    if (hi == Tri::No) {
+      out->push_back({true, n.id, n.kind,
+                      what + " is out of bounds: it can reach " + show(bt->dims[d]) + " or more"});
+    } else if (hi == Tri::Unknown) {
+      out->push_back({false, n.id, n.kind,
+                      what + ": cannot prove it is < " + show(bt->dims[d]) +
+                          " (add a fact, or run insert-guards)"});
+      unproven_.push_back({n.id, idx[d], last, what + " < " + show(bt->dims[d]), "le"});
+    }
+  }
+}
+
 std::vector<verify::Issue> Sema::check() {
   std::vector<verify::Issue> out;
   for (const Node& n : m_.nodes) {
@@ -797,6 +923,11 @@ std::vector<verify::Issue> Sema::check() {
         }
       }
     }
+
+    // A memory access (`traits: access`): one index per dimension of the buffer,
+    // each proven in bounds under the facts in scope. Unproven bounds go to
+    // insert-guards like any other unproven equation.
+    if (k->hasTrait("access")) checkAccess(n, *k, &out);
 
     // `dim`: the index must exist.
     if (k->expr.rfind("dim(", 0) == 0 && !n.operands.empty() &&

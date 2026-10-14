@@ -21,6 +21,7 @@ endif()
 add_library(brrr_core
   ir/ir.cpp
   ir/text.cpp
+  ir/builder.cpp
   schema/schema.cpp
   symbolic/symbolic.cpp
   symbolic/expr_io.cpp
@@ -29,6 +30,7 @@ add_library(brrr_core
   verify/check.cpp
   sema/sema.cpp
   interop/affine.cpp
+  codegen/llvm.cpp
   io/json.cpp
   connectors/connectors.cpp
   types/types.cpp

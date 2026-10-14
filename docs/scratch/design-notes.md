@@ -671,6 +671,23 @@ into (backends, frontends) via adapters.
   integer expression (operands, list elements, result dims) to a constant pinned
   by the facts or to Z3's simplification. A rewrite is kept only when it is smaller
   and proven equal, so Z3's simplifier proposes and the solver checks.
+- 2026-10-14: **codegen to LLVM IR text** (#18; see `codegen.md`). The target is LLVM IR,
+  not assembly: clang is the backend, and Brrr's proofs map onto LLVM's hints. Buffers
+  are shaped types (`buf<[dims], e>`). `load`/`store` take one index expression per dim,
+  and every index must be proven in bounds or it becomes a runtime guard. Proven code
+  compiles to bare `getelementptr inbounds`. Facts now flow to dominated blocks (SSA,
+  by induction for loops), so nested loops prove their accesses without restating
+  outer facts. First binaries: dot, matvec and sum_to_n, run against expected values.
+- 2026-10-14: **lower-aten** (#19). The first compiled PyTorch kernel: the frontend's
+  ATen ops lower to loop nests over buffers through a small core IR builder
+  (`ir/builder.h`: ops in program order, unique names and labels, a counted loop whose
+  range fact is proven on both edges). The lowered feed-forward block verifies with
+  zero bounds warnings, compiles with clang -O3, and matches torch within 4.8e-7.
+- 2026-10-14: **PyTorch to binary, end to end** (#20). `examples/build.py`: kernel.br ->
+  lower-aten -> to-llvm -> clang -O3 -march=native -> compared with torch's output (max
+  abs err <= 6e-7) and timed. Baseline with naive loops: 34.5 ms at 4096 tokens, against
+  2.4 ms for torch on one thread. The gap is unvectorized float reductions (no reassoc),
+  no tiling, and no use of facts. This is what niching starts from.
 - 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
   go brrr). Agents can read it, the solver backs its claims, and runs are recorded
   and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets

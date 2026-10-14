@@ -1,0 +1,29 @@
+# y = A x for an m-by-n row-major matrix: two nested CFG loops. The inner loop
+# block ^col is dominated by ^row, so the fact about %i holds there too, and
+# every access a[i, j], x[j], y[i] is proven in bounds.
+func @matvec(%m: index, %n: index, %a: buf<[%m, %n], f32>, %x: buf<[%n], f32>, %y: buf<[%m], f32>) {
+  fact 1 <= %m
+  fact 1 <= %n
+  %zero = const 0 : index
+  %f0 = const 0.0 : f32
+  br ^row(%zero)
+^row(%i: index):
+  fact 0 <= %i <= %m - 1
+  br ^col(%zero, %f0)
+^col(%j: index, %acc: f32):
+  fact 0 <= %j <= %n - 1
+  %aij = load %a, [%i, %j] : f32
+  %xj = load %x, [%j] : f32
+  %p = mul %aij, %xj : f32
+  %acc2 = add %acc, %p : f32
+  %j2 = add %j, 1
+  %more_j = icmp %j2, %n pred=lt
+  cond_br %more_j, ^col(%j2, %acc2), ^next(%acc2)
+^next(%sum: f32):
+  store %sum, %y, [%i]
+  %i2 = add %i, 1
+  %more_i = icmp %i2, %m pred=lt
+  cond_br %more_i, ^row(%i2), ^done
+^done:
+  return
+}

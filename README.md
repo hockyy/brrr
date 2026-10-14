@@ -72,14 +72,135 @@ ctest --test-dir src/build --output-on-failure
 
 Z3 is optional. CMake picks it up from `third_party/z3` or the system; without
 it, the local rules decide alone ([solver notes](docs/scratch/solver.md)).
+Compiling to a binary needs clang, and the PyTorch frontend needs torch.
 
 Then follow the tour in [`src/showcase/`](src/showcase/README.md): identity,
 facts, vocabulary, control flow, loops, symbolic shapes, modules, pipeline runs,
 the affine bridge, and a solver-backed pass.
 
-## Running a pipeline
+## How an agent drives Brrr
 
-A pipeline is a text file, one pass per line. `brrr passes` lists the passes:
+Here is one real session, on the PyTorch kernel in [`examples/`](examples/): a
+transformer feed-forward block, `y = x + fc2(relu(fc1(x)))`, over a token count
+that is a multiple of 8. Every command below was run, and the outputs are
+shortened only where marked. Everything an agent reads is plain text: IR,
+answers, stage records. Nothing needs a library binding.
+
+**1. Get the kernel.** `torch.export` writes it as Brrr. Shapes stay
+expressions, torch's ranges become facts, and the ATen ops are declared as
+schema data with shape rules:
+
+```
+$ python examples/kernel.py
+$ brrr check examples/kernel.br --schemas=examples/aten.bs
+errors: 0, warnings: 0                  # Brrr re-proved every shape torch inferred
+```
+
+```
+func @forward(%t: index, %fc1_weight: tensor<[256, 64], f32>, ..., %x: tensor<[8 * %t, 64], f32>)
+    -> tensor<[8 * %t, 64], f32> {
+  fact 2 <= %t <= 512
+  %linear = aten.linear %x, %fc1_weight, %fc1_bias : tensor<[8 * %t, 256], f32>
+  ...
+```
+
+**2. Ask before acting.** The solver answers Yes, No or Unknown, and never
+guesses. An Unknown means the answer depends on the input, which tells the agent
+what it could still decide:
+
+```
+$ brrr ask examples/kernel.br @forward "8 * %t <= 4096" --schemas=examples/aten.bs
+8 * %t <= 4096 -> Yes (scope @forward)
+$ brrr ask examples/kernel.br @forward "(8 * %t) mod 8 == 0" --schemas=examples/aten.bs
+(8 * %t) mod 8 == 0 -> Yes (scope @forward)
+$ brrr ask examples/kernel.br @forward "%t <= 64" --schemas=examples/aten.bs
+%t <= 64 -> Unknown (scope @forward)
+```
+
+**3. Run a pipeline. Every stage is recorded and verified.** `lower-aten` turns
+the ATen ops into loop nests over buffers, and every load and store is proven in
+bounds:
+
+```
+$ brrr run examples/kernel.br --passes=lower-aten --schemas=examples/aten.bs
+run r1
+  [0] input examples/kernel.br  state 731a5919
+  [1] lower-aten  ok  0.391 ms  +121 -5 ~6  state 358e62ee
+$ brrr show r1@1 --record                # what the stage did, by node id
+what lower-aten
+status ok
+diff +121 -5 ~6
+journal lower-aten n13: result -> output buffer argument
+journal lower-aten n1: 4 ATen op(s) lowered to loops
+...
+```
+
+A stage that breaks the IR is rolled back, and the run stops at the last good
+state with a list of what to try next.
+
+**4. Specialize: narrow the inputs.** Say this binary only ever serves 512
+tokens. The agent edits the IR as text: it adds one line, a guard (a fact that is
+checked at run time), and resumes the run. Node ids are recovered from the edited
+text, so the edit is just another recorded stage:
+
+```
+$ brrr show r1 > k.br                    # add after the facts:
+                                         #   guard %t, 64 rel=eq what="this binary serves 512 tokens"
+$ brrr resume r1 --state=k.br --passes=canonicalize,dce
+  [2] edit k.br  ok  +1 -0 ~0
+  [3] canonicalize  ok  58.346 ms  +0 -0 ~11
+  [4] dce  ok  0.213 ms  +0 -0 ~0
+$ brrr show r1 | grep "icmp 0,"
+  %linear_i_enter = icmp 0, 512 pred=lt   # 8 * %t is now 512 everywhere below the guard
+  ...
+```
+
+Called with any other token count, the specialized binary traps instead of
+computing garbage.
+
+**5. Try another way without losing this one.** A branch starts from any stage of
+any run, and the parent run is never modified:
+
+```
+$ brrr branch r1@1 --passes=canonicalize   # run r2: the generic kernel, another pipeline
+$ brrr runs                                # every run, its status, and its parent
+```
+
+**6. Compile and measure.** `brrr to-llvm` writes LLVM IR, and clang does the
+rest. `examples/build.py` runs the whole path and checks the result against
+torch's own output:
+
+```
+$ brrr show r1 > special.br && brrr to-llvm special.br > special.ll
+$ clang -O3 -march=native special.ll examples/harness.c -o special
+$ python examples/build.py               # kernel.br -> lower-aten -> to-llvm -> clang -> compare with torch
+```
+
+## From PyTorch to a binary: where it stands
+
+`python examples/build.py` on this machine (Arrow Lake, AVX2 + FMA):
+
+| tokens | max abs err vs torch | Brrr, naive loops | torch (all threads) | torch (1 thread) |
+|---|---|---|---|---|
+| 32 | 4.8e-7 | 0.27 ms | 0.075 ms | 0.029 ms |
+| 512 | 4.8e-7 | 4.3 ms | 0.12 ms | 0.27 ms |
+| 4096 | 6.0e-7 | 34.5 ms | 0.41 ms | 2.4 ms |
+
+The numbers are right, and the code is slow: about 15× slower than torch on one
+thread. Nothing has been niched yet. Step 4's specialization alone changes
+nothing either; it is 4.3 ms with or without it at 512 tokens, because the naive
+loop is limited by a scalar float reduction, not by its loop bounds. The speed
+will come from these next steps, each one a run an agent can branch and measure:
+
+- **Reassociation.** An opt-in `reassoc` flag on float adds, so LLVM can
+  vectorize the reductions.
+- **Tiling and unrolling** of the linear loops for the target's vector width.
+- **Facts as LLVM hints.** What Brrr proved becomes `llvm.assume`, `noalias` and
+  `align`.
+
+## Running a pipeline: the reference
+
+A pipeline is a text file, one pass per line; `brrr passes` lists the passes:
 
 ```
 infer-shapes
@@ -87,8 +208,6 @@ canonicalize
 insert-guards
 dce
 ```
-
-Every run gets an id and is recorded under `.brrr/`:
 
 ```
 brrr run kernel.br --pipeline=opt.txt        # run r1: verify the input, then stage by stage
@@ -106,21 +225,21 @@ The rules an agent can rely on:
   stops at the last good state and prints what to try next.
 - **Stop to look.** `--steps=N` runs N passes and pauses; `--pause-on-warning`
   pauses as soon as a stage leaves a warning, such as an equation the solver
-  couldn't prove. `resume` continues, and `.brrr/runs/<id>/pipeline.txt` holds the
-  passes still to run, so you can edit it first.
+  couldn't prove. `resume` continues, and `.brrr/runs/<id>/pipeline.txt` holds
+  the passes still to run, so you can edit it first.
 - **Branch instead of undoing.** A branch starts from any stage and by default
   replays the rest of the parent's pipeline. Give it `--passes` or `--pipeline`
   to try something else. The parent run is never modified.
 - **Edits are stages too.** `--state=<file>` turns a hand-edited IR into a
   recorded stage. Node ids come back by name matching, so the history still
   lines up.
-
-The [pipeline walkthrough](src/showcase/README.md#compiling-runs-stages-branches)
-shows a full session.
+- **Unknown is never Yes.** An equation the solver can't prove is a warning
+  (an error under `check --strict`), and `insert-guards` turns it into a runtime
+  check. An array index that can't be proven in bounds gets the same treatment.
 
 ## Status
 
-Prototype. What works and is tested (four `ctest` suites, ~170 CLI checks):
+Prototype. What works and is tested (four `ctest` suites, ~200 CLI checks):
 
 - the v1 language ([spec](docs/scratch/syntax-v1.md)): parser, both printings
   (clean, and stored with ids), round-trip, recovering ids from edited clean text;
@@ -129,31 +248,32 @@ Prototype. What works and is tested (four `ctest` suites, ~170 CLI checks):
   need no core support;
 - verification: structure, dominance, successor and loop arity; shape rules
   checked by the solver; facts checked by role (invariants on every incoming
-  edge, with branch conditions; loops by induction; lemmas);
+  edge, with branch conditions; loops by induction; lemmas), and facts flowing
+  into dominated blocks;
+- buffers, with every `load`/`store` proven in bounds or guarded at run time;
 - expressions with `floordiv`/`ceildiv`/`mod` by constants, and an exact bridge
-  to MLIR affine maps both ways (`to-affine` puts each operand on the right side
-  of `OpFoldResult`: static attribute, value, or `affine.apply`);
+  to MLIR affine maps both ways;
 - the solver: Z3 when available, otherwise local rules; `BRRR_SOLVER=check`
   asks both, and the test suite fails if they ever disagree
   ([solver notes](docs/scratch/solver.md));
+- PyTorch in (`examples/kernel.py`, `torch.export`), native code out
+  (`brrr to-llvm` + clang), checked against torch ([codegen notes](docs/scratch/codegen.md));
 - passes, one self-registering C++ file each: `infer-shapes`, `fold-constants`,
-  `fold-reshape`, `insert-guards`, `reconcile-casts`, `dce`, and `canonicalize`
-  (rewrites each integer expression to its simplest form that the solver proves
-  equal);
+  `fold-reshape`, `insert-guards`, `reconcile-casts`, `dce`, `canonicalize`,
+  `lower-aten`;
 - the run store: `run`, `resume`, `branch`, `show`, `runs`, with hand edits as
   recorded stages and rollback of any stage that fails verification.
 
-Not yet: code generation, so there is no binary yet, fast or otherwise (the plan
-goes through MLIR's text format to LLVM). Also missing: a rewrite-pattern
-engine, call ops and preconditions at call sites, `min`/`max` in expressions,
-and any measurement. The core builds in seconds, but neither compile time nor
-generated code has been benchmarked. The roadmap is
+Not yet: any niching (the generated code is the naive baseline above), a
+rewrite-pattern engine, call ops and preconditions at call sites, `min`/`max`
+in expressions, and vector types. The roadmap is
 [hockyy/brrr#1](https://github.com/hockyy/brrr/issues/1).
 
 ## Layout
 
 | Path | Role |
 |---|---|
+| `examples/` | PyTorch in and a binary out: `kernel.py` (torch.export → `kernel.br`), `build.py` (→ binary, checked against torch), `harness.c` |
 | `src/` | the library and the `brrr` CLI ([README](src/README.md)) |
 | `src/showcase/` | a guided tour, one concept per file |
 | `src/examples/` | external IRs mapped in (LLVM, torch.fx, AscendNPU HIVM, `scf.while`) and a kernel with its own types |

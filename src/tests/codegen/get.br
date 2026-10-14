@@ -1,0 +1,6 @@
+# An access the solver cannot prove (nothing bounds %k): `insert-guards` turns
+# both bounds into runtime checks, and an out-of-bounds call traps.
+func @get(%n: index, %k: index, %a: buf<[%n], f32>) -> f32 {
+  %v = load %a, [%k] : f32
+  return %v
+}

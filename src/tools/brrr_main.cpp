@@ -9,6 +9,7 @@
 #include <io.h>
 #endif
 
+#include "codegen/llvm.h"
 #include "interop/affine.h"
 #include "io/json.h"
 #include "ir/ir.h"
@@ -134,6 +135,7 @@ int usage() {
     from-affine "<affine_map>" <dims...> <symbols...>   MLIR import
     rename <file> <%value> <new>
     to-json <file> | roundtrip <file>
+    to-llvm <file>              LLVM IR text (scalars, buffers, blocks); compile with clang
     schema [--core-only]        the loaded vocabulary
 
   compile (runs are recorded in .brrr/, see `--store`)
@@ -325,6 +327,21 @@ int main(int argc, char** argv) {
   }
   if (cmd == "to-json") {
     std::cout << io::toJson(m);
+    return 0;
+  }
+  if (cmd == "to-llvm") {  // LLVM IR text; the module must verify first
+    const auto issues = sema::verifyModule(m, reg);
+    if (verify::hasErrors(issues)) {
+      printIssues(issues, false);
+      std::cerr << "error: the module does not verify; nothing was emitted\n";
+      return 1;
+    }
+    std::string ll, e;
+    if (!codegen::emitLLVM(m, reg, &ll, &e)) {
+      std::cerr << "error: " << e << "\n";
+      return 1;
+    }
+    std::cout << ll;
     return 0;
   }
   if (cmd == "roundtrip") {
