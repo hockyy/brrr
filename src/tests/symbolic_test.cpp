@@ -1,6 +1,7 @@
 // Symbolic inference prototype: "do these two symbols have the same value?"
 // answered mathematically, with tri-state results and honest Unknowns.
 #include <climits>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -256,10 +257,14 @@ int main() {
   //     on machine load or on the questions asked before it; answers recorded in
   //     an AnswerCache are replayed.
   if (backend() == Backend::Z3) {
+    // A question only Z3 decides (nonlinear): x * y = 6, 1 <= x <= 2, y >= 0
+    // imply y >= 3. Below, (x, z) name the question's two sides.
     Solver s;
-    s.assertLe(V("x"), V("y"));
-    s.assertLe(V("y"), V("z"));
-    expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "determinism: asked once");
+    s.assertEqual(Mul({V("x"), V("y")}), C(6));
+    s.assertRange("x", 1, 2);
+    s.assertLe(C(0), V("y"));
+    auto ask = [&]() { return s.lessOrEqual(C(3), V("y")); };
+    expect(ask() == Tri::Yes, "determinism: asked once");
     const uint64_t first = z3::stats().last_rlimit_used;
     for (int i = 0; i < 20; ++i) {
       Solver o;
@@ -268,7 +273,7 @@ int main() {
       (void)o.lessOrEqual(V("p"), C(i + 1));
       (void)o.constantValue(V("q"));
     }
-    expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "determinism: asked again");
+    expect(ask() == Tri::Yes, "determinism: asked again");
     std::printf("      (rlimit used: first %llu, again %llu)\n", (unsigned long long)first,
                 (unsigned long long)z3::stats().last_rlimit_used);
     expect(first > 0 && z3::stats().last_rlimit_used == first,
@@ -277,10 +282,10 @@ int main() {
     const uint64_t saved = z3::rlimit();
     z3::setRlimit(1);
     bool all_unknown = true;
-    for (int i = 0; i < 5; ++i) all_unknown &= s.lessOrEqual(V("x"), V("z")) == Tri::Unknown;
+    for (int i = 0; i < 5; ++i) all_unknown &= ask() == Tri::Unknown;
     z3::setRlimit(saved);
     expect(all_unknown, "a limit too small for the work: Unknown, every time");
-    expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "the default limit decides it again");
+    expect(ask() == Tri::Yes, "the default limit decides it again");
 
     const std::string path =
         (std::filesystem::temp_directory_path() / "brrr_answers_test.txt").string();
@@ -288,8 +293,8 @@ int main() {
     {
       AnswerCache cache;
       setAnswerCache(&cache);
-      expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "recorded: the first answer is asked");
-      expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes && cache.asked() == 1 &&
+      expect(ask() == Tri::Yes, "recorded: the first answer is asked");
+      expect(ask() == Tri::Yes && cache.asked() == 1 &&
                  cache.replayed() == 1,
              "recorded: the second is replayed");
       expect(cache.appendNew(path), "recorded: written to the store");
@@ -306,17 +311,128 @@ int main() {
       AnswerCache poisoned;
       poisoned.load(path);
       setAnswerCache(&poisoned);
-      expect(s.lessOrEqual(V("x"), V("z")) == Tri::No,
+      expect(ask() == Tri::No,
              "recorded: a replayed answer wins (poisoned on purpose)");
       setAnswerCache(nullptr);
       Solver more = s;
-      more.assertLe(V("z"), C(5));
+      more.assertLe(V("y"), C(100));
       setAnswerCache(&poisoned);
-      expect(more.lessOrEqual(V("x"), V("z")) == Tri::Yes,
+      expect(more.lessOrEqual(C(3), V("y")) == Tri::Yes,
              "recorded: a new fact makes a new question");
       setAnswerCache(nullptr);
     }
     std::filesystem::remove(path);
+  }
+
+  // 18. The local tiers against Z3 on random linear systems with divisions by
+  //     constants (fixed seed). Soundness: every Yes/No agrees and every settled
+  //     Unknown is Unknown for Z3 too. Completeness: on small division-free
+  //     systems whatever Z3 decides the local tiers decide; on bigger ones the
+  //     exact tier may give up (size cap) and Z3 answers, which is reported.
+  if (backend() == Backend::Z3) {
+    uint64_t seed = 0x5eed;
+    auto rnd = [&](int lo, int hi) {
+      seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+      return lo + static_cast<int>((seed >> 33) % static_cast<uint64_t>(hi - lo + 1));
+    };
+    const char* names[] = {"a", "b", "c", "d"};
+    bool with_div = false;  // the current trial uses a division
+    auto randLin = [&](int nv) {
+      std::vector<Expr> terms{C(rnd(-6, 6))};
+      for (int i = 0; i < nv; ++i) {
+        if (const int k = rnd(-3, 3)) terms.push_back(Mul({C(k), V(names[i])}));
+      }
+      Expr e = Add(terms);
+      const int shape = rnd(0, 5);
+      with_div = with_div || shape <= 2;
+      switch (shape) {
+        case 0: e = ExprTerm::div(ExprTerm::Kind::FloorDiv, e, rnd(2, 5)); break;
+        case 1: e = ExprTerm::div(ExprTerm::Kind::Mod, e, rnd(2, 5)); break;
+        case 2:
+          e = Add({e, ExprTerm::div(ExprTerm::Kind::CeilDiv, V(names[rnd(0, nv - 1)]), rnd(2, 4))});
+          break;
+        default: break;
+      }
+      return e;
+    };
+    int trials = 0, decided = 0, clashes = 0, overclaims = 0, gaps = 0, small_gaps = 0;
+    const uint64_t saved_rlimit = z3::rlimit();
+    z3::setRlimit(500000);  // small systems; keeps the test fast
+    for (int t = 0; t < 400; ++t) {
+      const int nv = rnd(2, 4);
+      with_div = false;
+      Solver s;
+      z3::Session z;
+      std::string facts;  // printed when the trial fails
+      for (int f = rnd(1, 4); f > 0; --f) {
+        const Expr x = randLin(nv), y = randLin(nv);
+        if (rnd(0, 3) == 0) {
+          s.assertEqual(x, y);
+          z.assertEqual(x, y);
+          facts += "  fact " + printExpr(x) + " == " + printExpr(y) + "\n";
+        } else {
+          s.assertLe(x, y);
+          z.assertLe(x, y);
+          facts += "  fact " + printExpr(x) + " <= " + printExpr(y) + "\n";
+        }
+      }
+      for (int i = 0; i < nv; ++i) {
+        if (rnd(0, 1)) continue;
+        const int lo = rnd(-10, 0), hi = rnd(1, 20);
+        s.assertRange(names[i], lo, hi);
+        z.assertRange(names[i], lo, hi);
+        facts += "  fact " + std::to_string(lo) + " <= " + names[i] + " <= " + std::to_string(hi) + "\n";
+      }
+      // Under contradictory facts every answer holds vacuously; skip them.
+      if (z.lessOrEqual(C(0), C(-1)) == Tri::Yes) continue;
+      const Expr a = randLin(nv), b = randLin(nv);
+      bool settled = false;
+      Tri ours = Tri::Unknown, ref = Tri::Unknown;
+      std::string question;
+      switch (rnd(0, 3)) {
+        case 0:
+          ours = s.localTiers('=', a, b, 0, &settled);
+          ref = z.isEqual(a, b);
+          question = printExpr(a) + " == " + printExpr(b);
+          break;
+        case 1:
+          ours = s.localTiers('l', a, b, 0, &settled);
+          ref = z.lessOrEqual(a, b);
+          question = printExpr(a) + " <= " + printExpr(b);
+          break;
+        case 2:
+          ours = s.localTiers('<', a, b, 0, &settled);
+          ref = z.isLess(a, b);
+          question = printExpr(a) + " < " + printExpr(b);
+          break;
+        default: {
+          const int m = rnd(2, 6);
+          ours = s.localTiers('a', a, nullptr, m, &settled);
+          ref = z.aligned(a, m);
+          question = "aligned(" + printExpr(a) + ", " + std::to_string(m) + ")";
+        }
+      }
+      const bool bad = (ours != Tri::Unknown && ref != Tri::Unknown && ours != ref) ||
+                       (settled && ref != Tri::Unknown) ||
+                       (ours == Tri::Unknown && ref != Tri::Unknown && nv <= 3 && !with_div);
+      if (bad && clashes + overclaims + small_gaps < 6) {
+        std::printf("      fuzz failure: %s -> local %s%s, z3 %s\n%s", question.c_str(),
+                    toString(ours), settled ? " (settled)" : "", toString(ref), facts.c_str());
+      }
+      ++trials;
+      decided += ref != Tri::Unknown;
+      clashes += ours != Tri::Unknown && ref != Tri::Unknown && ours != ref;
+      overclaims += settled && ref != Tri::Unknown;
+      gaps += ours == Tri::Unknown && ref != Tri::Unknown;
+      small_gaps += ours == Tri::Unknown && ref != Tri::Unknown && nv <= 3 && !with_div;
+    }
+    z3::setRlimit(saved_rlimit);
+    std::printf("      (fuzz: %d questions, %d decided by Z3; clashes %d, overclaims %d, "
+                "left to Z3 %d, of them small %d)\n",
+                trials, decided, clashes, overclaims, gaps, small_gaps);
+    expect(clashes == 0, "fuzz: the local tiers never contradict Z3");
+    expect(overclaims == 0, "fuzz: a settled Unknown is Unknown for Z3 too");
+    expect(small_gaps == 0, "fuzz: on small division-free systems the local tiers are complete");
   }
 
   if (failures == 0) std::printf("\nall symbolic tests passed\n");

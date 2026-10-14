@@ -58,14 +58,29 @@ class Session;
 }
 
 // Who decides what the fast paths leave open (BRRR_SOLVER=z3|local|check):
-//   z3     Z3 decides (the default when Brrr was built with Z3)
-//   local  the hand-written fallback (intervals, same-shape implication)
+//   z3     the local tiers, then Z3 for what they leave open (the default when
+//          Brrr was built with Z3)
+//   local  the local tiers alone: the rules, then exact linear arithmetic
 //   check  both; Z3's answer is used, and any disagreement is printed to
 //          stderr as "solver check:" — the way to audit the fallback
 enum class Backend { Local, Z3, Check };
 Backend backend();
 const char* backendName();
 size_t solverDisagreements();
+
+// Which tier decided each question, in the order they are tried:
+//   theorem   equal normal forms (Yes) or a nonzero constant difference (No)
+//   local     the local rules: substitution, linear facts, intervals, residues,
+//             sums of non-negative monomials
+//   exact     linear integer arithmetic, decided exactly (presburger.h); divisions
+//             by constants become variables, nonlinear monomials opaque atoms
+//   z3        Z3 (linear questions on the QF_LIA solver; see z3::stats())
+//   replayed  a recorded Z3 answer (AnswerCache)
+// Every tier is sound, so the first Yes or No wins. BRRR_SOLVER_STATS=1 prints these.
+struct TierStats {
+  uint64_t theorem = 0, local = 0, exact = 0, z3 = 0, replayed = 0, unknown = 0;
+};
+const TierStats& tierStats();
 
 // Recorded answers. With Z3, an answer is a function of its question key (Z3
 // version, rlimit, the facts in order, the question; see z3_backend.h), so a run
@@ -118,6 +133,14 @@ class Solver {
   // The value of `e` when the facts pin it to a single integer.
   std::optional<int64_t> constantValue(const Expr& e) const;
 
+  // The local tiers alone (the rules, then exact linear arithmetic), never Z3:
+  // for tests and audits. rel: '=' '<' 'l' (<=) 'a' (aligned to `modulus`);
+  // `settled` is set when an Unknown is final (see ruleTiers).
+  Tri localTiers(char rel, const Expr& a, const Expr& b, int64_t modulus = 0,
+                 bool* settled = nullptr) const {
+    return ruleTiers(rel, a, b, modulus, settled);
+  }
+
  private:
   struct Interval {
     std::optional<int64_t> lo, hi;
@@ -129,6 +152,14 @@ class Solver {
   Tri localAligned(const Expr& e, int64_t modulus) const;
   Tri localLessOrEqual(const Expr& a, const Expr& b) const;
   std::optional<int64_t> localConstantValue(const Expr& e) const;
+  // The local tiers for one question: the rules, then exact linear arithmetic.
+  // rel: '=' (a == b), 'l' (a <= b), '<' (a < b), 'a' (a aligned to `modulus`).
+  // `settled` is set when an Unknown is final: the exact tier saw the whole
+  // problem (no fact dropped, no nonlinear atom, budget left) and found the
+  // question satisfiable both ways, so no solver can answer Yes or No.
+  Tri ruleTiers(char rel, const Expr& a, const Expr& b, int64_t modulus,
+                bool* settled = nullptr) const;
+  Tri exactLinear(char rel, const Expr& a, const Expr& b, int64_t modulus, bool* settled) const;
 
   // This solver's facts in Z3, built on first use. A copy starts without one:
   // copies add their own facts (e.g. a branch condition), so they cannot share.
@@ -140,7 +171,10 @@ class Solver {
     LazySession& operator=(const LazySession&);
   };
   z3::Session& session() const;
-  Tri decide(Tri local, Tri z3, const char* what, const Expr& a, const Expr& b) const;
+  // `check` mode: report a Yes/No disagreement, or a settled Unknown that Z3
+  // decides (the exact tier claimed no solver could).
+  Tri decide(Tri local, bool settled, Tri z3, const char* what, const Expr& a,
+             const Expr& b) const;
   // A Z3 answer, replayed from the AnswerCache when it holds the question.
   std::string recorded(const std::string& question, const std::function<std::string()>& ask) const;
   Tri recordedTri(const std::string& question, const std::function<Tri()>& ask) const;

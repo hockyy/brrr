@@ -40,6 +40,7 @@ void setRlimit(uint64_t limit);
 // Counters over the process, for calibration and reports (BRRR_SOLVER_STATS=1).
 struct Stats {
   uint64_t checks = 0;
+  uint64_t linear_checks = 0;      // routed to the QF_LIA solver (decidable)
   uint64_t last_rlimit_used = 0;   // what the latest check consumed
   uint64_t max_rlimit_used = 0;    // the most any single check consumed
   uint64_t resource_unknowns = 0;  // checks stopped by the rlimit (deterministic)
@@ -69,6 +70,10 @@ class Session {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+// True when `e` is linear integer arithmetic: products have at most one
+// non-constant factor; floordiv/ceildiv/mod are by constants by construction.
+bool isLinear(const Expr& e);
 
 // Context-free algebraic simplification (Z3's `simplify`), translated back into
 // our expression language; nullptr when the result leaves it.

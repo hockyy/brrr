@@ -678,6 +678,15 @@ into (backends, frontends) via adapters.
   question). The run store records answers in `answers.txt` and replays them, so a
   branch reproduces its parent exactly. Z3's "rlimit count" statistic is the
   context's running total; a check's cost is the difference before and after it.
+- 2026-10-14: **tiered solver** (#3). The local rules now run before Z3 (they are
+  sound and deterministic, and the check-mode sweep keeps them honest). A new exact
+  tier decides linear integer arithmetic with the Omega test's elimination; it
+  borrows only the decision procedure, with no dependence analysis or polyhedra. When
+  the exact tier saw the whole problem, its Unknown is final and Z3 is skipped. Z3
+  handles nonlinear questions; linear ones go to its QF_LIA solver. Questions
+  answered by Z3 over the suite fell from 45 to 5. The differential fuzzer found that
+  `subst()` hides divisions in opaque atoms, so the exact tier uses the facts as
+  written.
 - 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
   go brrr). Agents can read it, the solver backs its claims, and runs are recorded
   and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets

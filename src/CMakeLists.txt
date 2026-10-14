@@ -25,6 +25,7 @@ add_library(brrr_core
   symbolic/symbolic.cpp
   symbolic/expr_io.cpp
   symbolic/facts.cpp
+  symbolic/presburger.cpp
   symbolic/z3_backend.cpp
   verify/check.cpp
   sema/sema.cpp

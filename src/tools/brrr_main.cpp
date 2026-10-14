@@ -161,8 +161,13 @@ void printIssues(const std::vector<brrr::verify::Issue>& issues, bool warnings) 
 }
 
 void printSolverStats() {
+  const brrr::symbolic::TierStats& t = brrr::symbolic::tierStats();
+  std::cerr << "solver tiers: " << t.theorem << " theorem, " << t.local << " local, " << t.exact
+            << " exact, " << t.z3
+            << " z3, " << t.replayed << " replayed, " << t.unknown << " unknown\n";
   const brrr::symbolic::z3::Stats& st = brrr::symbolic::z3::stats();
-  std::cerr << "solver stats: " << st.checks << " z3 check(s), max rlimit used "
+  std::cerr << "solver stats: " << st.checks << " z3 check(s) (" << st.linear_checks
+            << " on QF_LIA), max rlimit used "
             << st.max_rlimit_used << " (limit " << brrr::symbolic::z3::rlimit() << "), "
             << st.resource_unknowns << " stopped by the limit, " << st.safety_net_hits
             << " by the wall-clock safety net\n";

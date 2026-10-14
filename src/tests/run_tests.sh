@@ -181,23 +181,28 @@ if "$BIN" passes 2>/dev/null | grep -q "solver: z3"; then
     "$BIN" check "$SHOWCASE/06_shapes.br" --solver-rlimit=1 --strict
   contains "passes reports the rlimit" "rlimit 6000000" "$BIN" passes
 
-  # Recorded answers: a branch replays them all and reaches the same state.
+  # Recorded answers: a branch replays them all and reaches the same state. The
+  # kernel needs Z3: its lemma follows from the facts only nonlinearly.
+  printf 'func @f(%%x: index, %%y: index) -> index {\n  fact 1 <= %%x <= 2\n  fact %%x * %%y == 6\n  fact 0 <= %%y\n  %%z = add %%y, 0\n  fact 3 <= %%z\n  return %%z\n}\n' > "$TMP/nonlinear.br"
+  contains "recorded: only Z3 proves the nonlinear lemma" "does not follow" \
+    env BRRR_SOLVER=local "$BIN" check "$TMP/nonlinear.br"
   R="$TMP/rec"
-  contains "recorded: the run asks Z3" "answer(s) asked" \
-    "$BIN" run "$SHOWCASE/06_shapes.br" --passes=infer-shapes,canonicalize,insert-guards "--store=$R"
+  out="$("$BIN" run "$TMP/nonlinear.br" --passes=canonicalize,dce "--store=$R" 2>&1)"
+  if printf '%s' "$out" | grep -q "answer(s) asked" && ! printf '%s' "$out" | grep -q " 0 answer(s) asked"; then
+    pass "recorded: the run asks Z3"; else flunk "recorded: the run asks Z3" "$out"; fi
   contains "recorded: the manifest names the solver" "solver z3" cat "$R/runs/r1/run.txt"
   contains "recorded: a branch asks nothing new" "0 answer(s) asked" "$BIN" branch r1@0 "--store=$R"
   if [ "$("$BIN" show r1 --ids "--store=$R")" = "$("$BIN" show r2 --ids "--store=$R")" ]; then
     pass "recorded: the branch reaches the identical state"
   else flunk "recorded: the branch reaches the identical state"; fi
-  contains "recorded: each stage counts its answers" "replayed" cat "$R/runs/r2/01-infer-shapes.txt"
+  contains "recorded: each stage counts its answers" "replayed" cat "$R/runs/r2/01-canonicalize.txt"
   contains "recorded: resuming under another limit says so" "was recorded with z3" \
     "$BIN" resume r1 --passes=dce --solver-rlimit=5000 "--store=$R"
   # Poison the store (every recorded Yes becomes No): replayed answers win, so
   # the same input no longer verifies. This proves the store is consulted.
   sed -i 's/ yes$/ no/' "$R/answers.txt"
   contains "recorded: replayed answers are used (poisoned store)" "does not verify" \
-    "$BIN" run "$SHOWCASE/06_shapes.br" --passes=dce "--store=$R"
+    "$BIN" run "$TMP/nonlinear.br" --passes=dce "--store=$R"
 else
   echo "skip: built without Z3 (solver checks and canonicalize)"
 fi

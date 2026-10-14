@@ -18,36 +18,72 @@ An `Unknown` is never treated as `Yes`. Verification reports it as a warning
 (an error under `--strict`), and `insert-guards` can turn it into a runtime
 `guard`.
 
-## Backends
+## Tiers
 
-Two engines sit behind the interface:
+A question goes through tiers in order. Every tier is sound, so the first Yes or
+No wins:
 
-- **Z3** (optional, recommended). Facts become assertions over mathematical
-  integers, and each question is a validity check: `facts ∧ ¬q` unsat means
-  `Yes`, `facts ∧ q` unsat means `No`. `floordiv`/`mod` by a positive constant
-  are SMT-LIB `div`/`mod`, which round toward negative infinity for a positive
-  divisor. `ceildiv(x, c)` is encoded as `-((-x) div c)`. Atoms (`%7`, `tile`,
-  `?%7.0`) become Int constants named by their spelling. Every check runs on a
-  fresh Z3 solver under a deterministic resource limit, described in the
-  Determinism section below.
-- **Local rules** (always built). The polynomial normal form, an acyclic
-  substitution from equality facts (orientation plus linear isolation), linear
-  inequalities over the `<=` facts, interval evaluation with sound products,
-  residues, and division bounds. This was the only engine before Z3. It still
-  answers on its own when Z3 is absent, and it serves as the cross-check.
+| Tier | What it does | Cost |
+|---|---|---|
+| theorem | identical polynomial normal forms give Yes; a nonzero constant difference gives No | microseconds |
+| local | the hand-written rules: substitution from equality facts, linear `<=` facts, intervals with sound products, residues, division bounds, and sums of non-negative monomials (`0 <= %s * %s * %b * %b` holds because every power is even) | microseconds |
+| exact | **linear integer arithmetic decided exactly** (`presburger.cpp`, the Omega test's elimination). A `floordiv`, `ceildiv` or `mod` by a constant becomes a fresh variable with its defining bounds; a product of non-constants becomes an opaque atom | about a millisecond |
+| z3 | Z3, only for what the tiers above leave open. Linear questions go to its `QF_LIA` solver, nonlinear ones to the general strategy | milliseconds and up |
 
-Before dispatching, `isEqual` runs a fast path: if the polynomial normal forms
-of the two sides are identical, the answer is `Yes`; if they differ by a nonzero
-constant, the answer is `No`. Both are theorems of integer arithmetic, so it
-does not matter which engine would have answered.
+The exact tier also knows when an Unknown is **final**. If it saw the whole
+problem (no fact dropped, no opaque atom, no limit hit) and found the question
+satisfiable both ways, then the answer depends on the input, and no solver can
+say Yes or No. Z3 is not asked. Linear questions therefore never reach Z3, and
+the solver stays complete on the linear fragment even when Brrr is built without
+Z3.
 
-`BRRR_SOLVER` chooses the engine at run time:
+On the test suite and examples, the tiers change where answers come from:
+
+| | before | after |
+|---|---|---|
+| questions answered by Z3 | 45 (of 124) | 5 |
+| Z3 checks | 120 | 10 |
+| costliest Z3 check (rlimit) | ~570k | 410 |
+
+The exact tier is capped: at most 2000 subproblems, each with at most 256
+constraints (Fourier–Motzkin multiplies lower bounds by upper bounds). Past
+either cap it gives an honest Unknown, and Z3 answers instead.
+
+**How it is kept honest.** `check` mode asks the local tiers and Z3 on every
+question. It reports any Yes/No disagreement, and also any *settled* Unknown that
+Z3 then decides. The suite runs this over every file and requires zero reports.
+On top of that, a differential fuzzer in `symbolic_test` (fixed seed) builds 400
+random linear systems with `floordiv`/`ceildiv`/`mod` and requires:
+
+- no answer that contradicts Z3;
+- no false "final" claim;
+- on systems with at most 3 variables and no division, every question Z3 decides
+  is also decided locally.
+
+Building the fuzzer found a real bug: the exact tier had treated an opaque
+division atom from a polynomial normal form as a free variable while still
+claiming to be complete.
+
+### Z3 encoding
+
+Facts become assertions over mathematical integers, and each question is a
+validity check: `facts ∧ ¬q` unsat means `Yes`, `facts ∧ q` unsat means `No`.
+`floordiv`/`mod` by a positive constant are SMT-LIB `div`/`mod`, which round
+toward negative infinity for a positive divisor. `ceildiv(x, c)` is encoded as
+`-((-x) div c)`. Atoms (`%7`, `tile`, `?%7.0`) become Int constants named by
+their spelling. Every check runs on a fresh Z3 solver under a deterministic
+resource limit, described in the Determinism section below.
+
+`BRRR_SOLVER` chooses what runs after the local tiers:
 
 | Value | Behavior |
 |---|---|
-| unset or `z3` | Z3 when built, otherwise local |
-| `local` | local rules only |
-| `check` | ask both, return Z3's answer, and print `solver check: ...` to stderr whenever one says `Yes` and the other `No` |
+| unset or `z3` | the local tiers, then Z3 when built |
+| `local` | the local tiers only (complete on linear questions) |
+| `check` | the local tiers and Z3 on every question; Z3's answer is used, and `solver check: ...` is printed to stderr on a Yes/No disagreement or an overclaimed settled Unknown |
+
+`BRRR_SOLVER_STATS=1` prints the tier counts on exit (`solver tiers: 51
+theorem, 24 local, 44 exact, 5 z3, ...`).
 
 `brrr passes` reports the active engine, for example
 `(solver: z3, z3 5.1.0, rlimit 6000000)`.

@@ -1,5 +1,7 @@
 #include "symbolic/symbolic.h"
 
+#include "symbolic/presburger.h"
+
 #include "symbolic/z3_backend.h"
 
 #include <algorithm>
@@ -63,6 +65,24 @@ void dropZeros(Poly& p) {
 }
 
 std::optional<Poly> polyOf(const Expr& e);
+
+// Every monomial of `p` is non-negative: a non-negative coefficient, and each
+// atom of odd power non-negative (`atomNonNeg`); even powers are squares. With
+// `skip_constant` the constant term is left for the caller to weigh.
+bool monomialsNonNegative(const Poly& p, const std::function<bool(const std::string&)>& atomNonNeg,
+                          bool skip_constant) {
+  for (const auto& [mono, c] : p) {
+    if (mono.empty() && skip_constant) continue;
+    if (c < 0) return false;
+    for (size_t i = 0; i < mono.size();) {
+      size_t j = i;
+      while (j < mono.size() && mono[j] == mono[i]) ++j;
+      if ((j - i) % 2 == 1 && !atomNonNeg(mono[i])) return false;
+      i = j;
+    }
+  }
+  return true;
+}
 
 std::optional<LinForm> linOf(const Expr& e) {
   if (e->isDivision()) {
@@ -289,6 +309,128 @@ void divisionBounds(const Expr& e, std::vector<std::pair<Expr, Expr>>* out) {
   out->emplace_back(cq, x);
   out->emplace_back(x, ExprTerm::add({cq, ExprTerm::constant(c - 1)}));
 }
+
+
+// Facts and questions as linear constraints for the exact tier. Divisions by a
+// constant become a fresh variable q with its defining bounds; a product of
+// non-constants becomes one opaque atom per monomial of its normal form. Both
+// only forget information, so Yes and No stay sound.
+constexpr __int128 kLinLimit = static_cast<__int128>(1) << 62;
+
+bool mulChecked(int64_t a, int64_t b, int64_t* out) {
+  const __int128 r = static_cast<__int128>(a) * b;
+  if (r > kLinLimit || r < -kLinLimit) return false;
+  *out = static_cast<int64_t>(r);
+  return true;
+}
+
+bool addMul(int64_t* acc, int64_t k, int64_t v) {  // acc += k * v
+  int64_t p = 0;
+  if (!mulChecked(k, v, &p)) return false;
+  const __int128 r = static_cast<__int128>(*acc) + p;
+  if (r > kLinLimit || r < -kLinLimit) return false;
+  *acc = static_cast<int64_t>(r);
+  return true;
+}
+
+class Linearizer {
+ public:
+  std::vector<presburger::Constraint> side;  // the bounds of division variables
+  bool opaque = false;  // a nonlinear monomial became an atom (information lost)
+
+  std::string fresh() { return "#v" + std::to_string(n_++); }
+
+  // e == c + sum(coeffs); false when a coefficient would overflow.
+  bool lin(const Expr& e, presburger::Coeffs* co, int64_t* c) {
+    co->clear();
+    *c = 0;
+    return add(e, 1, co, c);
+  }
+
+ private:
+  bool add(const Expr& e, int64_t k, presburger::Coeffs* co, int64_t* c) {
+    switch (e->kind) {
+      case ExprTerm::Kind::Const:
+        return addMul(c, k, e->c);
+      case ExprTerm::Kind::Var:
+        // `{...}` names an opaque term from a polynomial normal form: an atom
+        // whose definition this tier cannot see.
+        if (!e->name.empty() && e->name[0] == '{') opaque = true;
+        return addMul(&(*co)[e->name], k, 1);
+      case ExprTerm::Kind::Add:
+        for (const Expr& x : e->args) {
+          if (!add(x, k, co, c)) return false;
+        }
+        return true;
+      case ExprTerm::Kind::Mul: {
+        int64_t f = 1;
+        std::vector<Expr> rest;
+        for (const Expr& x : e->args) {
+          if (x->kind != ExprTerm::Kind::Const) rest.push_back(x);
+          else if (!mulChecked(f, x->c, &f)) return false;
+        }
+        int64_t kf = 0;
+        if (!mulChecked(k, f, &kf)) return false;
+        if (rest.empty()) return addMul(c, kf, 1);
+        if (rest.size() == 1) return add(rest[0], kf, co, c);
+        opaque = true;
+        const auto p = polyOf(ExprTerm::mul(rest));
+        if (!p) return false;
+        for (const auto& [mono, coef] : *p) {
+          if (mono.empty()) {
+            if (!addMul(c, kf, coef)) return false;
+            continue;
+          }
+          std::string name = mono.size() == 1 ? mono[0] : "#m";
+          if (mono.size() > 1) {
+            for (const std::string& a : mono) name += " " + a;
+          }
+          int64_t kc = 0;
+          if (!mulChecked(kf, coef, &kc) || !addMul(&(*co)[name], kc, 1)) return false;
+        }
+        return true;
+      }
+      case ExprTerm::Kind::FloorDiv:
+      case ExprTerm::Kind::CeilDiv:
+      case ExprTerm::Kind::Mod: {
+        const int64_t d = e->args[1]->c;
+        presburger::Coeffs in;
+        int64_t ic = 0;
+        if (!add(e->args[0], 1, &in, &ic)) return false;
+        const bool ceil = e->kind == ExprTerm::Kind::CeilDiv;
+        const std::string key =
+            std::string(ceil ? "ceil " : "floor ") + std::to_string(d) + " " + pretty(e->args[0]);
+        std::string q;
+        if (const auto it = divs_.find(key); it != divs_.end()) {
+          q = it->second;
+        } else {
+          q = fresh();
+          divs_[key] = q;
+          // floor: d*q <= in <= d*q + d - 1    ceil: d*q - d + 1 <= in <= d*q
+          presburger::Constraint lo, hi;
+          lo.coeffs = in;
+          lo.coeffs[q] -= d;
+          lo.c = ic + (ceil ? d - 1 : 0);
+          for (const auto& [v, w] : in) hi.coeffs[v] = -w;
+          hi.coeffs[q] += d;
+          hi.c = -ic + (ceil ? 0 : d - 1);
+          side.push_back(std::move(lo));
+          side.push_back(std::move(hi));
+        }
+        if (e->kind != ExprTerm::Kind::Mod) return addMul(&(*co)[q], k, 1);
+        for (const auto& [v, w] : in) {  // in - d*q
+          if (!addMul(&(*co)[v], k, w)) return false;
+        }
+        int64_t kd = 0;
+        return addMul(c, k, ic) && mulChecked(k, -d, &kd) && addMul(&(*co)[q], kd, 1);
+      }
+    }
+    return false;
+  }
+
+  std::map<std::string, std::string> divs_;  // division term -> its variable
+  int n_ = 0;
+};
 
 }  // namespace
 
@@ -647,7 +789,8 @@ Tri Solver::localIsLess(const Expr& a, const Expr& b) const {
   const Interval ib = evalInterval(subst(b));
   if (ia.hi && ib.lo && *ia.hi < *ib.lo) return Tri::Yes;
   if (ia.lo && ib.hi && *ia.lo >= *ib.hi) return Tri::No;
-  return Tri::Unknown;
+  // Over the integers, a < b is a + 1 <= b: the linear facts apply too.
+  return localLessOrEqual(ExprTerm::add({a, ExprTerm::constant(1)}), b);
 }
 
 Tri Solver::localAligned(const Expr& e, int64_t modulus) const {
@@ -703,6 +846,22 @@ Tri Solver::localLessOrEqual(const Expr& a, const Expr& b) const {
   }
 
   if (structurallyEqual(a2, b2)) return Tri::Yes;
+  // Nonlinear: b - a is non-negative when each of its monomials is (squares,
+  // non-negative atoms); a - b is positive when, on top, its constant is.
+  auto atomNonNeg = [&](const std::string& atom) {
+    const Interval i = evalInterval(ExprTerm::var(atom));
+    return i.lo && *i.lo >= 0;
+  };
+  const Expr minus_one = ExprTerm::constant(-1);
+  if (const auto d = polyOf(ExprTerm::add({b2, ExprTerm::mul({minus_one, a2})}))) {
+    if (monomialsNonNegative(*d, atomNonNeg, false)) return Tri::Yes;
+  }
+  if (const auto d = polyOf(ExprTerm::add({a2, ExprTerm::mul({minus_one, b2})}))) {
+    const auto c = d->find(Monomial{});
+    if (c != d->end() && c->second > 0 && monomialsNonNegative(*d, atomNonNeg, true)) {
+      return Tri::No;
+    }
+  }
   const Interval la = evalInterval(a2);
   const Interval lb = evalInterval(b2);
   if (la.hi && lb.lo && *la.hi <= *lb.lo) return Tri::Yes;
@@ -737,6 +896,18 @@ const char* backendName() {
 namespace {
 size_t g_disagreements = 0;
 AnswerCache* g_cache = nullptr;
+TierStats g_tiers;
+
+Tri tally(Tri t) {
+  if (t == Tri::Unknown) ++g_tiers.unknown;
+  return t;
+}
+// The local rules decided it (or left it open for the next tier).
+bool decidedLocally(Tri t) {
+  if (t == Tri::Unknown) return false;
+  ++g_tiers.local;
+  return true;
+}
 
 // Two independent FNV-1a passes: a 128-bit name for a question.
 std::string hashQuestion(const std::string& s) {
@@ -761,6 +932,7 @@ Tri parseTri(const std::string& s) {
 }  // namespace
 
 size_t solverDisagreements() { return g_disagreements; }
+const TierStats& tierStats() { return g_tiers; }
 
 std::optional<std::string> AnswerCache::find(const std::string& question) {
   const auto it = answers_.find(hashQuestion(question));
@@ -797,7 +969,10 @@ void setAnswerCache(AnswerCache* cache) { g_cache = cache; }
 
 std::string Solver::recorded(const std::string& question,
                              const std::function<std::string()>& ask) const {
-  if (!g_cache || backend() != Backend::Z3) return ask();
+  if (!g_cache || backend() != Backend::Z3) {
+    if (backend() == Backend::Z3) ++g_tiers.z3;
+    return ask();
+  }
   if (!facts_key_valid_) {
     std::string k;
     for (const auto& [a, b] : equalities_) k += "eq " + pretty(a) + " = " + pretty(b) + "\n";
@@ -813,7 +988,11 @@ std::string Solver::recorded(const std::string& question,
   }
   const std::string key = z3::version() + " rlimit " + std::to_string(z3::rlimit()) + "\n" +
                           facts_key_ + "? " + question;
-  if (auto hit = g_cache->find(key)) return *hit;
+  if (auto hit = g_cache->find(key)) {
+    ++g_tiers.replayed;
+    return *hit;
+  }
+  ++g_tiers.z3;
   std::string answer = ask();
   g_cache->put(key, answer);
   return answer;
@@ -842,11 +1021,15 @@ z3::Session& Solver::session() const {
   return *z3_.p;
 }
 
-Tri Solver::decide(Tri local, Tri z3, const char* what, const Expr& a, const Expr& b) const {
-  if (local != Tri::Unknown && z3 != Tri::Unknown && local != z3) {
+Tri Solver::decide(Tri local, bool settled, Tri z3, const char* what, const Expr& a,
+                   const Expr& b) const {
+  const bool clash = local != Tri::Unknown && z3 != Tri::Unknown && local != z3;
+  const bool overclaim = settled && z3 != Tri::Unknown;
+  if (clash || overclaim) {
     ++g_disagreements;
-    std::fprintf(stderr, "solver check: %s %s %s -> local %s, z3 %s\n", pretty(a).c_str(), what,
-                 b ? pretty(b).c_str() : "", toString(local), toString(z3));
+    std::fprintf(stderr, "solver check: %s %s %s -> local %s%s, z3 %s\n", pretty(a).c_str(), what,
+                 b ? pretty(b).c_str() : "", toString(local), settled ? " (settled)" : "",
+                 toString(z3));
   }
   return z3;
 }
@@ -878,48 +1061,190 @@ void Solver::assertLe(const Expr& a, const Expr& b) {
   facts_key_valid_ = false;
 }
 
+// ---- the local tiers ----------------------------------------------------------------
+
+Tri Solver::ruleTiers(char rel, const Expr& a, const Expr& b, int64_t modulus,
+                      bool* settled) const {
+  bool ignored = false;
+  if (!settled) settled = &ignored;
+  *settled = false;
+  Tri l = Tri::Unknown;
+  switch (rel) {
+    case '=': l = localIsEqual(a, b); break;
+    case 'l': l = localLessOrEqual(a, b); break;
+    case '<': l = localIsLess(a, b); break;
+    case 'a': l = localAligned(a, modulus); break;
+  }
+  if (decidedLocally(l)) return l;
+  // Over the integers a < b is a + 1 <= b.
+  const Tri x = rel == '<'
+                    ? exactLinear('l', ExprTerm::add({a, ExprTerm::constant(1)}), b, 0, settled)
+                    : exactLinear(rel, a, b, modulus, settled);
+  if (x != Tri::Unknown || *settled) ++g_tiers.exact;
+  return x;
+}
+
+// Validity by two satisfiability checks, as with Z3: facts with the question
+// negated unsatisfiable means Yes; facts with the question unsatisfiable, No.
+Tri Solver::exactLinear(char rel, const Expr& a, const Expr& b, int64_t modulus,
+                        bool* settled) const {
+  using presburger::Constraint;
+  using presburger::Sat;
+  *settled = false;
+  bool complete = true;  // the constraints are exactly the facts and the question
+  const Expr minus_one = ExprTerm::constant(-1);
+  auto minus = [&](const Expr& x, const Expr& y) {
+    return ExprTerm::add({x, ExprTerm::mul({minus_one, y})});
+  };
+  Linearizer lz;
+  std::vector<Constraint> base;
+  // A fact that does not linearize is dropped: fewer facts, still sound.
+  auto fact = [&](const Expr& e, bool eq) {
+    Constraint k;
+    k.eq = eq;
+    if (lz.lin(e, &k.coeffs, &k.c)) base.push_back(std::move(k));
+    else complete = false;
+  };
+  // The facts as written: the equalities are constraints here, so substituting
+  // them would add nothing, and their polynomial forms hide divisions in
+  // opaque atoms.
+  for (const auto& [x, y] : equalities_) fact(minus(x, y), true);
+  for (const auto& [x, y] : le_facts_) fact(minus(y, x), false);
+  for (const auto& [v, r] : ranges_) {
+    fact(minus(ExprTerm::var(v), ExprTerm::constant(r.first)), false);
+    fact(minus(ExprTerm::constant(r.second), ExprTerm::var(v)), false);
+  }
+  for (const auto& [v, m, r] : mods_) {  // v = m*k + r
+    Constraint k;
+    k.eq = true;
+    k.coeffs[v] = 1;
+    k.coeffs[lz.fresh()] = -m;
+    k.c = -r;
+    base.push_back(std::move(k));
+  }
+  presburger::Coeffs d;
+  int64_t dc = 0;
+  if (!lz.lin(rel == 'a' ? a : minus(a, b), &d, &dc)) return Tri::Unknown;
+  base.insert(base.end(), lz.side.begin(), lz.side.end());
+
+  auto sat = [&](std::vector<Constraint> extra) {
+    std::vector<Constraint> cs = base;
+    cs.insert(cs.end(), extra.begin(), extra.end());
+    const Sat r = presburger::satisfiable(std::move(cs));
+    if (r == Sat::Unknown) complete = false;
+    return r;
+  };
+  // Neither Yes nor No was found; final when nothing was lost on the way.
+  auto open = [&]() {
+    *settled = complete && !lz.opaque;
+    return Tri::Unknown;
+  };
+  // sign * d + shift  (== 0 when eq, else >= 0)
+  auto q = [&](int64_t sign, int64_t shift, bool eq) {
+    Constraint k;
+    k.eq = eq;
+    for (const auto& [v, c] : d) k.coeffs[v] = sign * c;
+    k.c = sign * dc + shift;
+    return k;
+  };
+  switch (rel) {
+    case '=':  // a - b >= 1 and a - b <= -1 both impossible: Yes; a - b = 0 impossible: No
+      if (sat({q(1, -1, false)}) == Sat::Unsat && sat({q(-1, -1, false)}) == Sat::Unsat) return Tri::Yes;
+      if (sat({q(1, 0, true)}) == Sat::Unsat) return Tri::No;
+      return open();
+    case 'l':  // a - b >= 1 impossible: Yes; b - a >= 0 impossible: No
+      if (sat({q(1, -1, false)}) == Sat::Unsat) return Tri::Yes;
+      if (sat({q(-1, 0, false)}) == Sat::Unsat) return Tri::No;
+      return open();
+    case 'a': {  // a = m*k + r with 1 <= r <= m - 1 impossible: Yes; a = m*k impossible: No
+      if (modulus <= 0) return Tri::Unknown;
+      const std::string k = lz.fresh(), r = lz.fresh();
+      Constraint rem = q(1, 0, true), r_lo, r_hi;
+      rem.coeffs[k] = -modulus;
+      rem.coeffs[r] = -1;
+      r_lo.coeffs[r] = 1;
+      r_lo.c = -1;
+      r_hi.coeffs[r] = -1;
+      r_hi.c = modulus - 1;
+      if (sat({rem, r_lo, r_hi}) == Sat::Unsat) return Tri::Yes;
+      Constraint exact = q(1, 0, true);
+      exact.coeffs[k] = -modulus;
+      if (sat({exact}) == Sat::Unsat) return Tri::No;
+      return open();
+    }
+    default:
+      return Tri::Unknown;
+  }
+}
+
 // ---- questions --------------------------------------------------------------------
 
 Tri Solver::isEqual(const Expr& a, const Expr& b) const {
   // Theorems first: equal normal forms, or a nonzero constant difference.
   const Expr diff = ExprTerm::add({subst(a), ExprTerm::mul({ExprTerm::constant(-1), subst(b)})});
   if (const auto d = polyOf(diff)) {
-    if (d->empty()) return Tri::Yes;
-    if (d->size() == 1 && d->begin()->first.empty()) return Tri::No;
+    if (d->empty()) return ++g_tiers.theorem, Tri::Yes;
+    if (d->size() == 1 && d->begin()->first.empty()) return ++g_tiers.theorem, Tri::No;
   }
   switch (backend()) {
-    case Backend::Local: return localIsEqual(a, b);
-    case Backend::Z3:
-      return recordedTri("== " + pretty(a) + " , " + pretty(b),
-                         [&] { return session().isEqual(a, b); });
-    case Backend::Check: return decide(localIsEqual(a, b), session().isEqual(a, b), "==", a, b);
+    case Backend::Local: return tally(ruleTiers('=', a, b, 0));
+    case Backend::Z3: {
+      bool settled = false;
+      const Tri l = ruleTiers('=', a, b, 0, &settled);
+      if (l != Tri::Unknown || settled) return tally(l);
+      return tally(recordedTri("== " + pretty(a) + " , " + pretty(b),
+                               [&] { return session().isEqual(a, b); }));
+    }
+    case Backend::Check:
+    {
+      bool settled = false;
+      const Tri l = ruleTiers('=', a, b, 0, &settled);
+      return tally(decide(l, settled, session().isEqual(a, b), "==", a, b));
+    }
   }
   return Tri::Unknown;
 }
 
 Tri Solver::lessOrEqual(const Expr& a, const Expr& b) const {
   const auto d = linOf(ExprTerm::add({subst(a), ExprTerm::mul({ExprTerm::constant(-1), subst(b)})}));
-  if (d && d->coeffs.empty()) return d->c <= 0 ? Tri::Yes : Tri::No;
+  if (d && d->coeffs.empty()) return ++g_tiers.theorem, d->c <= 0 ? Tri::Yes : Tri::No;
   switch (backend()) {
-    case Backend::Local: return localLessOrEqual(a, b);
-    case Backend::Z3:
-      return recordedTri("<= " + pretty(a) + " , " + pretty(b),
-                         [&] { return session().lessOrEqual(a, b); });
+    case Backend::Local: return tally(ruleTiers('l', a, b, 0));
+    case Backend::Z3: {
+      bool settled = false;
+      const Tri l = ruleTiers('l', a, b, 0, &settled);
+      if (l != Tri::Unknown || settled) return tally(l);
+      return tally(recordedTri("<= " + pretty(a) + " , " + pretty(b),
+                               [&] { return session().lessOrEqual(a, b); }));
+    }
     case Backend::Check:
-      return decide(localLessOrEqual(a, b), session().lessOrEqual(a, b), "<=", a, b);
+    {
+      bool settled = false;
+      const Tri l = ruleTiers('l', a, b, 0, &settled);
+      return tally(decide(l, settled, session().lessOrEqual(a, b), "<=", a, b));
+    }
   }
   return Tri::Unknown;
 }
 
 Tri Solver::isLess(const Expr& a, const Expr& b) const {
   const auto d = linOf(ExprTerm::add({subst(a), ExprTerm::mul({ExprTerm::constant(-1), subst(b)})}));
-  if (d && d->coeffs.empty()) return d->c < 0 ? Tri::Yes : Tri::No;
+  if (d && d->coeffs.empty()) return ++g_tiers.theorem, d->c < 0 ? Tri::Yes : Tri::No;
   switch (backend()) {
-    case Backend::Local: return localIsLess(a, b);
-    case Backend::Z3:
-      return recordedTri("< " + pretty(a) + " , " + pretty(b),
-                         [&] { return session().isLess(a, b); });
-    case Backend::Check: return decide(localIsLess(a, b), session().isLess(a, b), "<", a, b);
+    case Backend::Local: return tally(ruleTiers('<', a, b, 0));
+    case Backend::Z3: {
+      bool settled = false;
+      const Tri l = ruleTiers('<', a, b, 0, &settled);
+      if (l != Tri::Unknown || settled) return tally(l);
+      return tally(recordedTri("< " + pretty(a) + " , " + pretty(b),
+                               [&] { return session().isLess(a, b); }));
+    }
+    case Backend::Check:
+    {
+      bool settled = false;
+      const Tri l = ruleTiers('<', a, b, 0, &settled);
+      return tally(decide(l, settled, session().isLess(a, b), "<", a, b));
+    }
   }
   return Tri::Unknown;
 }
@@ -928,22 +1253,34 @@ Tri Solver::aligned(const Expr& e, int64_t modulus) const {
   if (modulus <= 0) return Tri::Unknown;
   if (const auto c = polyOf(subst(e)); c && (c->empty() || (c->size() == 1 && c->begin()->first.empty()))) {
     const int64_t v = c->empty() ? 0 : c->begin()->second;
+    ++g_tiers.theorem;
     return normMod(v, modulus) == 0 ? Tri::Yes : Tri::No;
   }
   switch (backend()) {
-    case Backend::Local: return localAligned(e, modulus);
-    case Backend::Z3:
-      return recordedTri("aligned " + pretty(e) + " , " + std::to_string(modulus),
-                         [&] { return session().aligned(e, modulus); });
+    case Backend::Local: return tally(ruleTiers('a', e, nullptr, modulus));
+    case Backend::Z3: {
+      bool settled = false;
+      const Tri l = ruleTiers('a', e, nullptr, modulus, &settled);
+      if (l != Tri::Unknown || settled) return tally(l);
+      return tally(recordedTri("aligned " + pretty(e) + " , " + std::to_string(modulus),
+                               [&] { return session().aligned(e, modulus); }));
+    }
     case Backend::Check:
-      return decide(localAligned(e, modulus), session().aligned(e, modulus), "aligned to",
-                    e, ExprTerm::constant(modulus));
+    {
+      bool settled = false;
+      const Tri l = ruleTiers('a', e, nullptr, modulus, &settled);
+      return tally(decide(l, settled, session().aligned(e, modulus), "aligned to", e,
+                          ExprTerm::constant(modulus)));
+    }
   }
   return Tri::Unknown;
 }
 
 std::optional<int64_t> Solver::constantValue(const Expr& e) const {
-  if (const auto local = localConstantValue(e)) return local;  // a constant normal form
+  if (const auto local = localConstantValue(e)) {  // a constant normal form
+    ++g_tiers.local;
+    return local;
+  }
   if (backend() == Backend::Local) return std::nullopt;
   const std::string a = recorded("const " + pretty(e), [&] {
     const auto v = session().constantValue(e);

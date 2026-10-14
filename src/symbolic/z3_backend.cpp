@@ -1,5 +1,32 @@
 #include "symbolic/z3_backend.h"
 
+namespace brrr::symbolic::z3 {
+
+namespace {
+bool hasAtom(const Expr& e) {
+  if (e->kind == ExprTerm::Kind::Var) return true;
+  for (const Expr& a : e->args) {
+    if (hasAtom(a)) return true;
+  }
+  return false;
+}
+}  // namespace
+
+bool isLinear(const Expr& e) {
+  if (!e) return true;
+  if (e->kind == ExprTerm::Kind::Mul) {
+    int with_atoms = 0;
+    for (const Expr& a : e->args) with_atoms += hasAtom(a);
+    if (with_atoms > 1) return false;
+  }
+  for (const Expr& a : e->args) {
+    if (!isLinear(a)) return false;
+  }
+  return true;
+}
+
+}  // namespace brrr::symbolic::z3
+
 #ifdef BRRR_HAS_Z3
 
 #include <z3.h>
@@ -153,16 +180,24 @@ const Stats& stats() { return g_stats; }
 
 struct Session::Impl {
   std::vector<Z3_ast> facts;  // in the order they were asserted
+  bool facts_linear = true;
 
-  void add(Z3_ast f) { facts.push_back(f); }
+  void add(Z3_ast f, bool linear) {
+    facts.push_back(f);
+    facts_linear = facts_linear && linear;
+  }
 
   // A fresh solver with the facts (and `extra`), checked once. FALSE / TRUE /
   // UNDEF (limit, safety net, incompleteness, or an error). With `model`, a
   // satisfying model is returned (the caller releases it).
-  Z3_lbool check(Z3_ast extra, Z3_model* model = nullptr) {
+  // Linear checks (facts and question) go to the QF_LIA solver: a decision
+  // procedure for exactly this fragment, cheaper than the general strategy.
+  Z3_lbool check(Z3_ast extra, bool linear, Z3_model* model = nullptr) {
     Z3_context c = ctx();
     g_error = false;
-    Z3_solver s = Z3_mk_solver(c);
+    linear = linear && facts_linear;
+    Z3_solver s = linear ? Z3_mk_solver_for_logic(c, Z3_mk_string_symbol(c, "QF_LIA"))
+                         : Z3_mk_solver(c);
     Z3_solver_inc_ref(c, s);
     Z3_params p = Z3_mk_params(c);
     Z3_params_inc_ref(c, p);
@@ -179,6 +214,7 @@ struct Session::Impl {
     const uint64_t before = rlimitUsed(s);
     const Z3_lbool r = Z3_solver_check(c, s);
     ++g_stats.checks;
+    g_stats.linear_checks += linear;
     const uint64_t total = rlimitUsed(s);
     const uint64_t used = total >= before ? total - before : total;
     g_stats.last_rlimit_used = used;
@@ -190,8 +226,8 @@ struct Session::Impl {
     if (trace) {
       std::string q = extra ? Z3_ast_to_string(c, extra) : "(model)";
       for (char& ch : q) ch = ch == '\n' ? ' ' : ch;
-      std::fprintf(stderr, "solver check: rlimit %llu  %s  %s\n",
-                   static_cast<unsigned long long>(used),
+      std::fprintf(stderr, "solver check: rlimit %llu  %s  %s  %s\n",
+                   static_cast<unsigned long long>(used), linear ? "QF_LIA" : "general",
                    r == Z3_L_TRUE ? "sat" : r == Z3_L_FALSE ? "unsat" : "unknown", q.c_str());
     }
     if (r == Z3_L_UNDEF) {
@@ -216,10 +252,10 @@ struct Session::Impl {
     return g_error ? Z3_L_UNDEF : r;
   }
 
-  Tri valid(Z3_ast q) {
+  Tri valid(Z3_ast q, bool linear) {
     Z3_context c = ctx();
-    if (check(Z3_mk_not(c, q)) == Z3_L_FALSE) return Tri::Yes;
-    if (check(q) == Z3_L_FALSE) return Tri::No;
+    if (check(Z3_mk_not(c, q), linear) == Z3_L_FALSE) return Tri::Yes;
+    if (check(q, linear) == Z3_L_FALSE) return Tri::No;
     return Tri::Unknown;
   }
 };
@@ -228,10 +264,10 @@ Session::Session() : impl_(std::make_unique<Impl>()) {}
 Session::~Session() = default;
 
 void Session::assertEqual(const Expr& a, const Expr& b) {
-  impl_->add(Z3_mk_eq(ctx(), toZ3(a), toZ3(b)));
+  impl_->add(Z3_mk_eq(ctx(), toZ3(a), toZ3(b)), isLinear(a) && isLinear(b));
 }
 void Session::assertLe(const Expr& a, const Expr& b) {
-  impl_->add(Z3_mk_le(ctx(), toZ3(a), toZ3(b)));
+  impl_->add(Z3_mk_le(ctx(), toZ3(a), toZ3(b)), isLinear(a) && isLinear(b));
 }
 void Session::assertRange(const std::string& atom, int64_t lo, int64_t hi) {
   const Expr v = ExprTerm::var(atom);
@@ -240,17 +276,18 @@ void Session::assertRange(const std::string& atom, int64_t lo, int64_t hi) {
 }
 void Session::assertMod(const std::string& atom, int64_t modulus, int64_t residue) {
   impl_->add(Z3_mk_eq(ctx(), toZ3(ExprTerm::div(ExprTerm::Kind::Mod, ExprTerm::var(atom), modulus)),
-                      toZ3(ExprTerm::constant(residue))));
+                      toZ3(ExprTerm::constant(residue))),
+             true);
 }
 
 Tri Session::isEqual(const Expr& a, const Expr& b) {
-  return impl_->valid(Z3_mk_eq(ctx(), toZ3(a), toZ3(b)));
+  return impl_->valid(Z3_mk_eq(ctx(), toZ3(a), toZ3(b)), isLinear(a) && isLinear(b));
 }
 Tri Session::lessOrEqual(const Expr& a, const Expr& b) {
-  return impl_->valid(Z3_mk_le(ctx(), toZ3(a), toZ3(b)));
+  return impl_->valid(Z3_mk_le(ctx(), toZ3(a), toZ3(b)), isLinear(a) && isLinear(b));
 }
 Tri Session::isLess(const Expr& a, const Expr& b) {
-  return impl_->valid(Z3_mk_lt(ctx(), toZ3(a), toZ3(b)));
+  return impl_->valid(Z3_mk_lt(ctx(), toZ3(a), toZ3(b)), isLinear(a) && isLinear(b));
 }
 Tri Session::aligned(const Expr& e, int64_t modulus) {
   if (modulus <= 0) return Tri::Unknown;
@@ -261,7 +298,7 @@ Tri Session::aligned(const Expr& e, int64_t modulus) {
 std::optional<int64_t> Session::constantValue(const Expr& e) {
   Z3_context c = ctx();
   Z3_model m = nullptr;
-  if (impl_->check(nullptr, &m) != Z3_L_TRUE || !m) return std::nullopt;
+  if (impl_->check(nullptr, isLinear(e), &m) != Z3_L_TRUE || !m) return std::nullopt;
   Z3_ast v = nullptr;
   int64_t value = 0;
   const bool ok = Z3_model_eval(c, m, toZ3(e), true, &v) && v &&
