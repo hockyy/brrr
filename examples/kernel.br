@@ -1,0 +1,23 @@
+# A transformer feed-forward block, y = x + fc2(relu(fc1(x))), exported from
+# PyTorch by examples/kernel.py (torch.export, no MLIR). Do not edit: rerun
+#   python examples/kernel.py
+#   brrr check examples/kernel.br --schemas=examples/aten.bs
+#
+# torch's dynamic token count 8 * Dim("t") is the expression 8 * %t, and its
+# range is a fact. Brrr re-proves every shape torch inferred (aten.bs rules).
+func @forward(
+    %t: index,
+    %fc1_weight: tensor<[256, 64], f32>,
+    %fc1_bias: tensor<[256], f32>,
+    %fc2_weight: tensor<[64, 256], f32>,
+    %fc2_bias: tensor<[64], f32>,
+    %x: tensor<[8 * %t, 64], f32>)
+    -> tensor<[8 * %t, 64], f32> {
+  fact 2 <= %t <= 512
+  fact 8 <= 8 * %t <= 4096
+  %linear = aten.linear %x, %fc1_weight, %fc1_bias : tensor<[8 * %t, 256], f32>
+  %relu = aten.relu %linear : tensor<[8 * %t, 256], f32>
+  %linear_1 = aten.linear %relu, %fc2_weight, %fc2_bias : tensor<[8 * %t, 64], f32>
+  %add = aten.add %x, %linear_1 : tensor<[8 * %t, 64], f32>
+  return %add
+}

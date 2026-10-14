@@ -68,6 +68,33 @@ contains "schema extension: without it the kind is foreign" "unknown kind 'neg'"
   "$BIN" check "$CASES/neg_ok.br"
 contains "include cycles are rejected" "include cycle" "$BIN" print "$CASES/cycle_a.br"
 
+# ---- PyTorch in: examples/kernel.py exports a kernel, Brrr re-proves its shapes --------
+TORCH_EX="$SRC/../examples"
+contains "pytorch: the exported kernel verifies" "errors: 0, warnings: 0" \
+  "$BIN" check "$TORCH_EX/kernel.br" --schemas="$TORCH_EX/aten.bs"
+contains "pytorch: torch's 8 * Dim(t) stays an expression" "%x: tensor<[8 * %t, 64], f32>" \
+  "$BIN" print "$TORCH_EX/kernel.br"
+contains "pytorch: torch's range is a fact" "fact 2 <= %t <= 512" "$BIN" print "$TORCH_EX/kernel.br"
+sed 's/%fc2_bias: tensor<\[64\], f32>/%fc2_bias: tensor<[32], f32>/' "$TORCH_EX/kernel.br" > "$TMP/kernel_bad.br"
+contains "pytorch: a wrong shape is caught by Brrr's own rules" "64 == 32 is false" \
+  "$BIN" check "$TMP/kernel_bad.br" --schemas="$TORCH_EX/aten.bs"
+TORCH_PY=""
+for p in python3 python; do
+  if "$p" -c "import torch" >/dev/null 2>&1; then TORCH_PY="$p"; break; fi
+done
+if [ -n "$TORCH_PY" ]; then
+  mkdir -p "$TMP/torch"
+  "$TORCH_PY" -I "$TORCH_EX/kernel.py" "$TMP/torch" >/dev/null 2>&1
+  if cmp -s "$TMP/torch/kernel.br" "$TORCH_EX/kernel.br" && cmp -s "$TMP/torch/aten.bs" "$TORCH_EX/aten.bs"; then
+    pass "pytorch: rerunning kernel.py reproduces the committed files"
+  else
+    flunk "pytorch: rerunning kernel.py reproduces the committed files" \
+      "$(diff "$TMP/torch/kernel.br" "$TORCH_EX/kernel.br" | head)"
+  fi
+else
+  echo "skip: no python with torch (kernel.py regeneration)"
+fi
+
 # ---- identity --------------------------------------------------------------------
 contains "clean form: an unnamed value prints as its id" "%5 = relu %sum" \
   "$BIN" print "$SHOWCASE/01_identity.br"

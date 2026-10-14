@@ -51,6 +51,12 @@ Then follow the tour in [`src/showcase/`](src/showcase/README.md): identity,
 facts, vocabulary, control flow, loops, symbolic shapes, modules, pipeline runs,
 the affine bridge, and a solver-backed pass.
 
+PyTorch in: `python examples/kernel.py` exports a transformer feed-forward block
+with `torch.export` and writes `examples/kernel.br`. torch's dynamic token count
+`8 * Dim("t")` becomes the expression `8 * %t` in every type, its range becomes a
+fact, and Brrr re-proves every shape torch inferred
+(`brrr check examples/kernel.br --schemas=examples/aten.bs`).
+
 ## Status
 
 Prototype. What works and is tested (four `ctest` suites, ~170 CLI checks):
@@ -87,6 +93,7 @@ the core builds in seconds, but compile-time speed has not been benchmarked.
 |---|---|
 | `src/` | the library and the `brrr` CLI ([README](src/README.md)) |
 | `src/showcase/` | a guided tour, one concept per file |
+| `examples/` | PyTorch in: `kernel.py` exports a kernel with `torch.export` and writes `kernel.br` (symbolic shapes kept as expressions) |
 | `src/examples/` | external IRs mapped in: LLVM, torch.fx, AscendNPU HIVM, `scf.while` |
 | `docs/scratch/` | design notes and the decision log; [`syntax-v1.md`](docs/scratch/syntax-v1.md) is the spec |
 | `docs/` | the paper draft (LaTeX; build with `latexmk -pdf main.tex`) |
