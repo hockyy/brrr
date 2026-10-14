@@ -1,0 +1,15 @@
+# The README's loop: block arguments become phis, the invariant is proven on
+# both edges into ^body.
+func @sum_to_n(%n: index) -> index {
+  %zero = const 0 : index
+  %has = icmp %n, %zero pred=gt
+  cond_br %has, ^body(%zero, %n), ^exit(%zero)
+^body(%acc: index, %i: index):
+  fact 0 <= %i <= %n
+  %i2 = sub %i, 1
+  %acc2 = add %acc, %i
+  %more = icmp %i2, %zero pred=gt
+  cond_br %more, ^body(%acc2, %i2), ^exit(%acc2)
+^exit(%r: index):
+  return %r
+}

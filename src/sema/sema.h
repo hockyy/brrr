@@ -88,10 +88,14 @@ class Sema {
     std::string label;
   };
   symbolic::Solver build(NodeId scope, size_t stop_fact);
+  // The blocks that strictly dominate `block` in its function's CFG (the
+  // function's own scope, the entry, excluded: it is on the lexical chain).
+  const std::vector<NodeId>& dominatingBlocks(NodeId block);
   void addCondition(symbolic::Solver& s, const Operand& cond, bool polarity);
   symbolic::Expr operandExpr(const Operand& o);
   std::vector<Edge> edgesInto(const Node& block);
   void checkFacts(std::vector<verify::Issue>* out);
+  void checkAccess(const Node& n, const schema::Kind& k, std::vector<verify::Issue>* out);
   const Rule& ruleFor(const schema::Kind& k);
   // Match a node against its kind's shape rule. Returns the inferred result type
   // (null if the rule cannot apply), and appends the equations it implies.
@@ -116,6 +120,7 @@ class Sema {
   std::set<ValueRef> in_progress_meaning_;  // meaning
   std::map<std::string, Rule> rules_;
   std::map<NodeId, symbolic::Solver> solvers_;
+  std::map<NodeId, std::vector<NodeId>> dominators_;  // block -> strict dominator blocks
   std::vector<std::pair<symbolic::Expr, symbolic::Expr>> defs_;
   bool defs_ready_ = false;
   std::vector<verify::Issue> fact_issues_;

@@ -31,6 +31,7 @@ Suites: `core` (CLI checks in `tests/run_tests.sh`, with the negative cases in
 | `pipeline/` | the run store: runs, stages, branches, edits |
 | `io/` | JSON encoding |
 | `interop/` | the MLIR affine bridge: affine maps <-> expressions |
+| `codegen/` | `to-llvm`: LLVM IR text for scalars, buffers and blocks ([notes](../docs/scratch/codegen.md)) |
 | `connectors/` | external solvers (SymPy), consulted only when the local solver says Unknown |
 | `types/` | the unification prototype (`ctest -R types`) |
 
@@ -60,6 +61,7 @@ trusted. `canonicalize.cpp`, at about 80 lines, is a complete example.
     brrr facts  <file>
     brrr rename <file> %old %new
     brrr to-json <file>  |  roundtrip <file>  |  schema
+    brrr to-llvm <file>                     # LLVM IR text; then clang -O3 x.ll ...
     brrr to-affine <file> <scope> "<e1>, <e2>"     # MLIR export, per OpFoldResult
     brrr from-affine "<affine_map>" <dims...> <symbols...>   # MLIR import
 

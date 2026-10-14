@@ -671,6 +671,13 @@ into (backends, frontends) via adapters.
   integer expression (operands, list elements, result dims) to a constant pinned
   by the facts or to Z3's simplification. A rewrite is kept only when it is smaller
   and proven equal, so Z3's simplifier proposes and the solver checks.
+- 2026-10-14: **codegen to LLVM IR text** (#18; see `codegen.md`). The target is LLVM IR,
+  not assembly: clang is the backend, and Brrr's proofs map onto LLVM's hints. Buffers
+  are shaped types (`buf<[dims], e>`). `load`/`store` take one index expression per dim,
+  and every index must be proven in bounds or it becomes a runtime guard. Proven code
+  compiles to bare `getelementptr inbounds`. Facts now flow to dominated blocks (SSA,
+  by induction for loops), so nested loops prove their accesses without restating
+  outer facts. First binaries: dot, matvec and sum_to_n, run against expected values.
 - 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
   go brrr). Agents can read it, the solver backs its claims, and runs are recorded
   and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets

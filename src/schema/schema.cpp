@@ -578,11 +578,46 @@ kind continue_if {
 )SCHEMA";
 }
 
+std::string memSchemaText() {
+  return R"SCHEMA(# mem module: buffers.
+# A buffer is a shaped type, `buf<[dims], elem>` by convention (the name is free):
+# row-major, contiguous, its dims expressions over values. An `access` kind
+# indexes a buffer (operand `buf`) with one expression per dimension (operand
+# `at`, a list), and every index is checked against the buffer's dims under the
+# facts in scope: proven in bounds, or a warning `insert-guards` can guard.
+
+kind alloc {
+  operands: none
+  attrs: none
+}
+
+kind dealloc {
+  operands: buf
+  results: none
+  attrs: none
+}
+
+kind load {
+  operands: buf, at
+  attrs: none
+  traits: access
+}
+
+kind store {
+  operands: value, buf, at
+  results: none
+  attrs: none
+  traits: access
+}
+)SCHEMA";
+}
+
 Registry buildRegistry(bool std_kinds, bool control_kinds) {
   Registry r;
   std::string err;
   parseSchema(coreSchemaText(), &r, &err);  // known-good literals
   if (std_kinds) parseSchema(stdSchemaText(), &r, &err);
+  if (std_kinds) parseSchema(memSchemaText(), &r, &err);
   if (control_kinds) parseSchema(controlSchemaText(), &r, &err);
   return r;
 }

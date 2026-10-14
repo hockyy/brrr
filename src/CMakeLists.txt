@@ -29,6 +29,7 @@ add_library(brrr_core
   verify/check.cpp
   sema/sema.cpp
   interop/affine.cpp
+  codegen/llvm.cpp
   io/json.cpp
   connectors/connectors.cpp
   types/types.cpp

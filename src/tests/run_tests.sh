@@ -172,6 +172,46 @@ contains "reconcile-casts folds a round trip" "status: done" \
   "$BIN" run "$CASES/warn_unrealized_cast.br" --passes=reconcile-casts,dce "--store=$TMP/casts"
 contains "after reconcile-casts nothing remains" "  return %x" "$BIN" show r1 "--store=$TMP/casts"
 
+# ---- codegen: buffers proven in bounds, LLVM IR, compiled by clang -------------------
+CG="$SRC/tests/codegen"
+contains "bounds: every load in the loop is proven in bounds" "errors: 0, warnings: 0" \
+  "$BIN" check "$CG/dot.br"
+contains "bounds: nested loops (facts flow to dominated blocks)" "errors: 0, warnings: 0" \
+  "$BIN" check "$CG/matvec.br"
+sed 's/  fact 0 <= %i <= %n - 1/  fact 0 <= %i <= %n/; s/pred=lt/pred=le/' "$CG/dot.br" > "$TMP/dot_off.br"
+contains "bounds: an off-by-one loop is not proven" "cannot prove it is < %n" \
+  "$BIN" check "$TMP/dot_off.br"
+sed 's/%y = load %b, \[%i\]/%y = load %b, [%n]/' "$CG/dot.br" > "$TMP/dot_n.br"
+contains "bounds: a definite out-of-bounds access is an error" "is out of bounds" \
+  "$BIN" check "$TMP/dot_n.br"
+contains "bounds: an unproven access becomes runtime guards" "+2 -0" \
+  "$BIN" run "$CG/get.br" --passes=insert-guards "--store=$TMP/cg"
+"$BIN" show r1 "--store=$TMP/cg" > "$TMP/get_guarded.br"
+contains "to-llvm: block arguments become phis" "phi float [ 0x0000000000000000, %.entry ], [ %acc2, %loop ]" \
+  "$BIN" to-llvm "$CG/dot.br"
+contains "to-llvm: proven loads are plain inbounds addresses" "getelementptr inbounds float, ptr %a, i64 %i" \
+  "$BIN" to-llvm "$CG/dot.br"
+contains "to-llvm: row-major 2D addressing" "mul nsw i64 %i, %n" "$BIN" to-llvm "$CG/matvec.br"
+contains "to-llvm: tensor ops must be lowered first" "no LLVM lowering for 'matmul'" \
+  "$BIN" to-llvm "$SHOWCASE/06_shapes.br"
+if command -v clang >/dev/null 2>&1; then
+  for k in dot matvec sum_to_n; do "$BIN" to-llvm "$CG/$k.br" > "$TMP/$k.ll"; done
+  "$BIN" to-llvm "$TMP/get_guarded.br" > "$TMP/get.ll"
+  if clang -O2 "$TMP/dot.ll" "$TMP/matvec.ll" "$TMP/sum_to_n.ll" "$TMP/get.ll" "$CG/harness.c" \
+       -o "$TMP/harness.exe" >"$TMP/clang.log" 2>&1; then
+    pass "clang compiles the emitted LLVM IR"
+    contains "binary: dot product" "10100.0" "$TMP/harness.exe" dot
+    contains "binary: matrix-vector product" "20.0 60.0 100.0" "$TMP/harness.exe" matvec
+    contains "binary: sum_to_n(100)" "5050" "$TMP/harness.exe" sum
+    contains "binary: a guarded access in bounds" "30.0" "$TMP/harness.exe" get 2
+    status "binary: a guarded access out of bounds traps" 132 "$TMP/harness.exe" get 9
+  else
+    flunk "clang compiles the emitted LLVM IR" "$(cat "$TMP/clang.log")"
+  fi
+else
+  echo "skip: no clang (compiling the emitted LLVM IR)"
+fi
+
 # ---- the solver backend --------------------------------------------------------------
 if "$BIN" passes 2>/dev/null | grep -q "solver: z3"; then
   # check mode asks the local rules and Z3 every question; any disagreement is a bug.
