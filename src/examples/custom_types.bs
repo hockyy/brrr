@@ -1,0 +1,28 @@
+# The vocabulary of one int8 GEMM kernel, as data: no C++ and no core change.
+# Load it with `--schemas=src/examples/custom_types.bs`.
+#
+# `qtile` (used by custom_types.br) is not declared anywhere: a shaped type's
+# name is free, and its dims and element type are what the shape rules check.
+
+# f32 -> i8 with a per-tensor scale; `to=` names the new element type.
+kind quantize {
+  operands: x
+  attrs: scale: float, to: type
+  shape: S -> S
+  traits: pure
+}
+
+# i32 accumulator -> f32.
+kind dequantize {
+  operands: acc
+  attrs: scale: float, to: type
+  shape: S -> S
+  traits: pure
+}
+
+# i8 x i8 accumulates in i32: the rule names the result's element type.
+kind qmatmul {
+  operands: a, b
+  shape: [M, K], [K, N] -> [M, N] : i32
+  traits: pure
+}

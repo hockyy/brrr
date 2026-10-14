@@ -1,0 +1,20 @@
+# A kernel that brings its own types and ops.
+#
+# Brrr has no type declarations and needs none for this: `qtile<[dims], i8>` is
+# a name the core has never heard of, and the kernel's ops are declared in a
+# schema file next to this one (custom_types.bs). Shapes are still checked by the
+# solver through the kinds' shape rules, and facts work as usual.
+#
+#   brrr check src/examples/custom_types.br --schemas=src/examples/custom_types.bs
+#   brrr types src/examples/custom_types.br --schemas=src/examples/custom_types.bs
+#
+# Try: accumulate into qtile<[%m, %k], i32> instead: `check` cannot prove %n == %k.
+# Without --schemas the three kinds are foreign: accepted, with one warning each.
+func @gemm_int8(%m: index, %k: index, %n: index,
+                %a: tensor<[%m, %k], f32>, %b: qtile<[%k, %n], i8>) -> tensor<[%m, %n], f32> {
+  fact %k mod 32 == 0                    # this kernel is only built for K in steps of 32
+  %qa = quantize %a scale=0.05 to=i8 : qtile<[%m, %k], i8>
+  %acc = qmatmul %qa, %b                 # inferred: qtile<[%m, %n], i32>
+  %r = dequantize %acc scale=0.0025 to=f32 : tensor<[%m, %n], f32>
+  return %r
+}

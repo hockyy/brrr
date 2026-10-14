@@ -66,6 +66,16 @@ contains "schema extension: --schemas declares a kind" "errors: 0, warnings: 0" 
   "$BIN" check --schemas="$SCHEMAS/extra.bs" "$CASES/neg_ok.br"
 contains "schema extension: without it the kind is foreign" "unknown kind 'neg'" \
   "$BIN" check "$CASES/neg_ok.br"
+# A kernel with its own types and ops: a type name needs no declaration, and the
+# kernel's schema file gives its ops shape rules the solver checks.
+contains "custom types: a kernel's own types and ops verify" "errors: 0, warnings: 0" \
+  "$BIN" check "$EXAMPLES/custom_types.br" --schemas="$EXAMPLES/custom_types.bs"
+contains "custom types: the rule infers the accumulator type" "%acc = qmatmul : qtile<[%m, %n], i32>  (inferred)" \
+  "$BIN" types "$EXAMPLES/custom_types.br" --schemas="$EXAMPLES/custom_types.bs"
+sed 's/%acc = qmatmul %qa, %b .*/%acc = qmatmul %qa, %b : qtile<[%m, %k], i32>/' \
+  "$EXAMPLES/custom_types.br" > "$TMP/custom_bad.br"
+contains "custom types: shapes on custom types are still checked" "cannot prove %n == %k" \
+  "$BIN" check "$TMP/custom_bad.br" --schemas="$EXAMPLES/custom_types.bs"
 contains "include cycles are rejected" "include cycle" "$BIN" print "$CASES/cycle_a.br"
 
 # ---- identity --------------------------------------------------------------------
