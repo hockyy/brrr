@@ -6,10 +6,10 @@
 #include "types/infer.h"
 #include "types/type_parse.h"
 
-using bridgeir::types::InferNode;
-using bridgeir::types::Signature;
-using bridgeir::types::TypeRef;
-using bridgeir::types::TypeTerm;
+using brrr::types::InferNode;
+using brrr::types::Signature;
+using brrr::types::TypeRef;
+using brrr::types::TypeTerm;
 
 static int failures = 0;
 
@@ -123,7 +123,7 @@ int main() {
     TypeRef t;
     expect(parseTypeTerm("tensor<f16, 64, 128>", &t, &err),
            "parseTypeTerm: tensor with args");
-    const bridgeir::types::Unifier u;
+    const brrr::types::Unifier u;
     expect(t && u.pretty(t) == "tensor<f16, 64, 128>",
            "parseTypeTerm: pretty round-trip");
     TypeRef nested;

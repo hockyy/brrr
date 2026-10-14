@@ -1,4 +1,8 @@
-# Control flow in BridgeIR (v0): branches and loops, completely
+# Control flow in Brrr (v0): branches and loops, completely
+
+> **2026-10-14:** written for the v0 text format (`nN name = kind ...`, edge and
+> param nodes). The current language is [`syntax-v1.md`](syntax-v1.md); the
+> reasoning here still stands where v1 does not say otherwise.
 
 > **2026-10-13 supersede:** `phi` has been **removed** from the language. Wherever
 > this note says phi is declared or retained, read it as superseded: a block's
@@ -116,14 +120,14 @@ Honest boundaries:
 
 ## Block arguments vs phi nodes (both declared; block args are canonical)
 
-| | phi nodes (LLVM) | block arguments (MLIR, SIL, BridgeIR) |
+| | phi nodes (LLVM) | block arguments (MLIR, SIL, Brrr) |
 |---|---|---|
 | placement | grouped at block top; every pass special-cases them | parameters of the block — uniform iteration |
 | semantics | parallel copy at *block entry*, entangled with ordering (the "lost copy"/swap bugs of SSA destruction) | parallel copy at the *edge*: the branch site states what it passes |
 | function inputs | separate Argument concept | unified: function inputs and block inputs are both `param` nodes |
 | cross-block refs | needed (defs live in other blocks) | none: parameters are block-local names |
 
-BridgeIR form: an `edge` node carries `(target, passed...)`; `br`/`cbr` consume
+Brrr form: an `edge` node carries `(target, passed...)`; `br`/`cbr` consume
 edge values; blocks declare `param idx=N` arguments. Arity is checked by the
 schema via traits (`block`/`edge`/`arg`): edge passed-values must equal the target
 block's parameter count — violations are rejected (`tests/cases/bad_edge.br`).

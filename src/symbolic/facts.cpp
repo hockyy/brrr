@@ -5,7 +5,7 @@
 
 #include "symbolic/expr_io.h"
 
-namespace bridgeir::symbolic {
+namespace brrr::symbolic {
 namespace {
 
 std::string trim(const std::string& s) {
@@ -27,141 +27,174 @@ bool parseIntStrict(const std::string& s, int64_t* out) {
   return true;
 }
 
+bool isAtom(const Expr& e) { return e->kind == ExprTerm::Kind::Var; }
+
 }  // namespace
 
-bool applyFact(const std::string& line, Solver& s, std::string* err) {
-  const std::string t = trim(line);
-  if (t.rfind("fact", 0) != 0) {
-    *err = "expected a 'fact' line";
-    return false;
+bool parseFact(const std::string& text, ParsedFact* out, std::string* err) {
+  std::string body = trim(text);
+  if (body.rfind("fact", 0) == 0 &&
+      (body.size() == 4 || std::isspace(static_cast<unsigned char>(body[4])))) {
+    body = trim(body.substr(4));
   }
-  const std::string body = trim(t.substr(4));
   if (body.empty()) {
     *err = "empty fact";
     return false;
   }
+  *out = ParsedFact{};
 
-  const size_t lp = body.find('(');
-  if (lp != std::string::npos) {
-    // Functor form: aligned(e, m) / range(v, lo, hi)
+  // Functor forms: aligned(e, m) / range(e, lo, hi).
+  const bool aligned = body.rfind("aligned(", 0) == 0;
+  const bool range = body.rfind("range(", 0) == 0;
+  if (aligned || range) {
+    const size_t lp = body.find('(');
     const size_t rp = body.rfind(')');
-    if (rp == std::string::npos || rp < lp) {
-      *err = "malformed fact: missing ')'";
+    if (rp == std::string::npos || rp != body.size() - 1) {
+      *err = "malformed fact: expected ')' at the end";
       return false;
     }
-    const std::string name = trim(body.substr(0, lp));
     const std::vector<std::string> args =
         splitTopLevel(body.substr(lp + 1, rp - lp - 1), ',');
-
-    if (name == "aligned") {
-      if (args.size() != 2) {
-        *err = "aligned expects (symbol, modulus)";
-        return false;
-      }
-      Expr e = parseExpr(args[0], err);
-      if (!e) return false;
-      if (e->kind != ExprTerm::Kind::Var) {
-        *err = "aligned requires a symbol on the left for now";
-        return false;
-      }
-      int64_t m = 0;
-      if (!parseIntStrict(args[1], &m) || m <= 0) {
+    if (args.size() != (aligned ? 2u : 3u)) {
+      *err = aligned ? "aligned expects (atom, modulus)" : "range expects (atom, lo, hi)";
+      return false;
+    }
+    Expr e = parseExpr(args[0], err);
+    if (!e) return false;
+    if (!isAtom(e)) {
+      *err = std::string(aligned ? "aligned" : "range") +
+             " needs a value or symbol as its first argument";
+      return false;
+    }
+    out->kind = aligned ? ParsedFact::Kind::Aligned : ParsedFact::Kind::Range;
+    out->exprs.push_back(e);
+    if (aligned) {
+      if (!parseIntStrict(args[1], &out->a) || out->a <= 0) {
         *err = "aligned modulus must be a positive integer";
         return false;
       }
-      if (s.aligned(e, m) == Tri::No) {
-        *err = "fact contradicts existing facts: aligned(" + args[0] + ", " +
-               std::to_string(m) + ") is refuted";
-        return false;
-      }
-      s.assertMod(e->name, m, 0);
-      return true;
-    }
-
-    if (name == "range") {
-      if (args.size() != 3) {
-        *err = "range expects (symbol, lo, hi)";
-        return false;
-      }
-      Expr e = parseExpr(args[0], err);
-      if (!e) return false;
-      if (e->kind != ExprTerm::Kind::Var) {
-        *err = "range requires a symbol as its first argument";
-        return false;
-      }
-      int64_t lo = 0, hi = 0;
-      if (!parseIntStrict(args[1], &lo) || !parseIntStrict(args[2], &hi) ||
-          lo > hi) {
-        *err = "range bounds must be integers with lo <= hi";
-        return false;
-      }
-      if (auto cur = s.rangeOf(e->name)) {
-        const int64_t nlo = std::max(lo, cur->first);
-        const int64_t nhi = std::min(hi, cur->second);
-        if (nlo > nhi) {
-          *err = "fact contradicts existing range for '" + e->name + "'";
-          return false;
-        }
-        s.assertRange(e->name, nlo, nhi);
-      } else {
-        s.assertRange(e->name, lo, hi);
-      }
-      return true;
-    }
-
-    *err = "unknown fact '" + name + "'";
-    return false;
-  }
-
-  // Inequality forms: `a <= b` and `a >= b` (strict `<`/`>` are rejected loudly
-  // rather than silently mis-parsed).
-  auto addInequality = [&](const std::string& l, const std::string& r) -> bool {
-    Expr lhs = parseExpr(trim(l), err);
-    if (!lhs) return false;
-    Expr rhs = parseExpr(trim(r), err);
-    if (!rhs) return false;
-    if (s.lessOrEqual(rhs, lhs) == Tri::No) {
-      *err = "fact contradicts existing facts: " + trim(body) + " is refuted";
+    } else if (!parseIntStrict(args[1], &out->a) ||
+               !parseIntStrict(args[2], &out->b) || out->a > out->b) {
+      *err = "range bounds must be integers with lo <= hi";
       return false;
     }
-    s.assertLe(lhs, rhs);
     return true;
-  };
-  if (const size_t le = body.find("<="); le != std::string::npos) {
-    return addInequality(body.substr(0, le), body.substr(le + 2));
-  }
-  if (const size_t ge = body.find(">="); ge != std::string::npos) {
-    return addInequality(body.substr(ge + 2), body.substr(0, ge));  // a>=b == b<=a
-  }
-  if (body.find('<') != std::string::npos ||
-      body.find('>') != std::string::npos) {
-    *err = "strict inequalities are not supported; use `<=` or `>=` in: " +
-           trim(body);
-    return false;
   }
 
-  // Equality form: expr = expr
-  const size_t eq = body.find('=');
-  if (eq == std::string::npos) {
-    *err = "unrecognized fact (expected '=' or a known functor)";
+  // Relations, possibly chained: `0 <= %i <= %n` is `0 <= %i` and `%i <= %n`.
+  // Strict `<`/`>` are rejected loudly rather than silently mis-parsed.
+  std::vector<std::string> sides;
+  std::string cur;
+  int depth = 0;
+  for (size_t i = 0; i < body.size(); ++i) {
+    const char c = body[i];
+    if (c == '(') ++depth;
+    if (c == ')') --depth;
+    if (depth == 0 && (c == '<' || c == '>' || c == '=')) {
+      const char nx = i + 1 < body.size() ? body[i + 1] : '\0';
+      std::string op(1, c);
+      if (nx == '=') {
+        op += '=';
+        ++i;
+      } else if (c != '=') {
+        *err = "strict inequalities are not supported; use `<=` or `>=` in: " + body;
+        return false;
+      }
+      sides.push_back(trim(cur));
+      out->ops.push_back(op == "==" ? "=" : op);
+      cur.clear();
+      continue;
+    }
+    cur += c;
+  }
+  sides.push_back(trim(cur));
+  if (out->ops.empty()) {
+    *err = "unrecognized fact (expected a relation, aligned(...), or range(...))";
     return false;
   }
-  Expr lhs = parseExpr(trim(body.substr(0, eq)), err);
-  if (!lhs) return false;
-  Expr rhs = parseExpr(trim(body.substr(eq + 1)), err);
-  if (!rhs) return false;
-  if (s.isEqual(lhs, rhs) == Tri::No) {
-    *err = "fact contradicts existing facts: " + trim(body) + " is refuted";
-    return false;
+  for (const std::string& side : sides) {
+    Expr e = parseExpr(side, err);
+    if (!e) return false;
+    out->exprs.push_back(e);
   }
-  s.assertEqual(lhs, rhs);
   return true;
 }
 
-bool applyFacts(const std::vector<std::string>& lines, Solver& s,
-                std::string* err) {
-  for (const std::string& line : lines) {
-    if (!applyFact(line, s, err)) return false;
+std::string printFact(const ParsedFact& f,
+                      const std::function<std::string(const std::string&)>& rename) {
+  switch (f.kind) {
+    case ParsedFact::Kind::Aligned:
+      return "aligned(" + printExpr(f.exprs[0], rename) + ", " + std::to_string(f.a) + ")";
+    case ParsedFact::Kind::Range:
+      return "range(" + printExpr(f.exprs[0], rename) + ", " + std::to_string(f.a) +
+             ", " + std::to_string(f.b) + ")";
+    case ParsedFact::Kind::Relation: {
+      std::string s = printExpr(f.exprs[0], rename);
+      for (size_t k = 0; k < f.ops.size(); ++k) {
+        s += " " + f.ops[k] + " " + printExpr(f.exprs[k + 1], rename);
+      }
+      return s;
+    }
+  }
+  return {};
+}
+
+ParsedFact mapFactVars(const ParsedFact& f,
+                       const std::function<std::string(const std::string&)>& rename) {
+  ParsedFact out = f;
+  for (Expr& e : out.exprs) e = mapVars(e, rename);
+  return out;
+}
+
+void collectFactVars(const ParsedFact& f, std::set<std::string>* out) {
+  for (const Expr& e : f.exprs) collectVars(e, out);
+}
+
+bool applyFact(const std::string& text, Solver& s, std::string* err) {
+  ParsedFact f;
+  if (!parseFact(text, &f, err)) return false;
+  const std::string shown = printFact(f);
+
+  if (f.kind == ParsedFact::Kind::Aligned) {
+    if (s.aligned(f.exprs[0], f.a) == Tri::No) {
+      *err = "fact contradicts existing facts: " + shown + " is refuted";
+      return false;
+    }
+    s.assertMod(f.exprs[0]->name, f.a, 0);
+    return true;
+  }
+  if (f.kind == ParsedFact::Kind::Range) {
+    const std::string& v = f.exprs[0]->name;
+    int64_t lo = f.a, hi = f.b;
+    if (auto cur = s.rangeOf(v)) {
+      lo = std::max(lo, cur->first);
+      hi = std::min(hi, cur->second);
+      if (lo > hi) {
+        *err = "fact contradicts existing range for '" + v + "'";
+        return false;
+      }
+    }
+    s.assertRange(v, lo, hi);
+    return true;
+  }
+  for (size_t k = 0; k < f.ops.size(); ++k) {
+    const Expr& l = f.exprs[k];
+    const Expr& r = f.exprs[k + 1];
+    if (f.ops[k] == "=") {
+      if (s.isEqual(l, r) == Tri::No) {
+        *err = "fact contradicts existing facts: " + shown + " is refuted";
+        return false;
+      }
+      s.assertEqual(l, r);
+      continue;
+    }
+    const Expr& lo = f.ops[k] == "<=" ? l : r;  // a >= b  ==  b <= a
+    const Expr& hi = f.ops[k] == "<=" ? r : l;
+    if (s.lessOrEqual(lo, hi) == Tri::No) {
+      *err = "fact contradicts existing facts: " + shown + " is refuted";
+      return false;
+    }
+    s.assertLe(lo, hi);
   }
   return true;
 }
@@ -169,53 +202,33 @@ bool applyFacts(const std::vector<std::string>& lines, Solver& s,
 namespace {
 
 // Apply every fact on the chain root -> scope, in document order per scope.
-bool applyScopeChain(const bridgeir::Module& m, bridgeir::NodeId scope,
+bool applyScopeChain(const brrr::Module& m, brrr::NodeId scope,
                      Solver* s, std::string* err) {
-  std::vector<bridgeir::NodeId> chain;
-  for (bridgeir::NodeId x = scope; x != bridgeir::kInvalidId;) {
-    chain.push_back(x);
-    const bridgeir::Node* n = m.find(x);
-    x = n ? n->scope : bridgeir::kInvalidId;
+  std::vector<brrr::NodeId> chain;
+  for (brrr::NodeId x = scope; x != brrr::kInvalidId;) {
+    chain.insert(chain.begin(), x);
+    const brrr::Node* n = m.find(x);
+    x = n ? n->scope : brrr::kInvalidId;
   }
-  for (size_t i = 0, j = chain.size(); i + 1 < j; ++i, --j) {
-    std::swap(chain[i], chain[j - 1]);
-  }
-  auto applyScope = [&](bridgeir::NodeId sc) {
-    for (const bridgeir::Module::FactEntry& f : m.facts) {
-      if (f.scope == sc) {
-        if (!applyFact(f.line, *s, err)) return false;
-      }
+  chain.insert(chain.begin(), brrr::kInvalidId);
+  for (const brrr::NodeId sc : chain) {
+    for (const brrr::Module::FactEntry& f : m.facts) {
+      if (f.scope == sc && !applyFact(f.text, *s, err)) return false;
     }
-    return true;
-  };
-  if (!applyScope(bridgeir::kInvalidId)) return false;
-  for (const bridgeir::NodeId x : chain) {
-    if (!applyScope(x)) return false;
   }
   return true;
 }
 
 }  // namespace
 
-bool validateAllFacts(const bridgeir::Module& m, std::string* err) {
-  std::vector<bridgeir::NodeId> scopes;
-  scopes.push_back(bridgeir::kInvalidId);
-  for (const bridgeir::Module::FactEntry& f : m.facts) {
-    if (f.scope == bridgeir::kInvalidId) continue;
-    bool seen = false;
-    for (const bridgeir::NodeId x : scopes) {
-      if (x == f.scope) {
-        seen = true;
-        break;
-      }
-    }
-    if (!seen) scopes.push_back(f.scope);
-  }
-  for (const bridgeir::NodeId sc : scopes) {
+bool validateAllFacts(const brrr::Module& m, std::string* err) {
+  std::set<brrr::NodeId> scopes{brrr::kInvalidId};
+  for (const brrr::Module::FactEntry& f : m.facts) scopes.insert(f.scope);
+  for (const brrr::NodeId sc : scopes) {
     Solver s;
     std::string local;
     if (!applyScopeChain(m, sc, &s, &local)) {
-      *err = (sc == bridgeir::kInvalidId ? std::string("root")
+      *err = (sc == brrr::kInvalidId ? std::string("root")
                                          : "scope n" + std::to_string(sc)) +
              ": " + local;
       return false;
@@ -224,14 +237,12 @@ bool validateAllFacts(const bridgeir::Module& m, std::string* err) {
   return true;
 }
 
-Solver solverForScope(const bridgeir::Module& m, bridgeir::NodeId scope,
+Solver solverForScope(const brrr::Module& m, brrr::NodeId scope,
                       std::string* err) {
   Solver s;
   std::string local;
-  if (!applyScopeChain(m, scope, &s, &local)) {
-    if (err) *err = local;
-  }
+  if (!applyScopeChain(m, scope, &s, &local) && err) *err = local;
   return s;
 }
 
-}  // namespace bridgeir::symbolic
+}  // namespace brrr::symbolic

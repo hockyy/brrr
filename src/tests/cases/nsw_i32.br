@@ -1,0 +1,5 @@
+func @f(%a: i32, %x: tensor<[%a + 1], f32>) {
+  %b = add %a, 1 nsw=true
+  %y = reshape %x : tensor<[%b], f32>
+  return
+}

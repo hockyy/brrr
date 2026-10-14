@@ -1,0 +1,4 @@
+# expect: return value 0 dim 0: %n == %n + 1 is false
+func @f(%n: index, %x: tensor<[%n + 1], f32>) -> tensor<[%n], f32> {
+  return %x
+}

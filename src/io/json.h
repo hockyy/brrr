@@ -9,8 +9,8 @@
 
 #include "ir/ir.h"
 
-namespace bridgeir::io {
+namespace brrr::io {
 
 std::string toJson(const Module& m);
 
-}  // namespace bridgeir::io
+}  // namespace brrr::io

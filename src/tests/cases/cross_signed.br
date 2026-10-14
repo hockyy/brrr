@@ -1,0 +1,5 @@
+func @f(%a: i32, %b: u16, %x: tensor<[%a + %b], f32>) {
+  %wide = cast %a to=i64      # widening: means %a
+  %u = cast %a to=u32         # may wrap: opaque
+  return
+}

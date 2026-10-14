@@ -1,0 +1,5 @@
+# expect: missing attribute 'pred'
+func @f(%a: index, %b: index) {
+  %c = icmp %a, %b
+  return
+}

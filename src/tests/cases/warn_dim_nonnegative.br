@@ -1,0 +1,12 @@
+# expect: dim 1 of %y: cannot prove %m - 5 >= 0
+func @f(%m: index, %x: tensor<[8], f32>) {
+  %y = reshape %x : tensor<[2, %m - 5], f32>
+  return
+}
+
+# An argument's dims are assumed non-negative (whoever passed the tensor made
+# it), so here %m - 5 >= 0 is known and %z's dims are proven.
+func @g(%m: index, %x: tensor<[%m - 5], f32>) {
+  %z = relu %x
+  return
+}

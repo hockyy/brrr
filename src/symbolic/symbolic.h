@@ -1,7 +1,7 @@
 // Symbolic layer: unknowns and expressions as DATA, facts as constraints, queries
 // answered mathematically with tri-state results (Yes / No / Unknown).
 //
-// This is what lets BridgeIR answer "do these two symbols have the same value?"
+// This is what lets Brrr answer "do these two symbols have the same value?"
 // as a core service instead of per-pass C++ analysis.
 #pragma once
 
@@ -14,15 +14,18 @@
 #include <utility>
 #include <vector>
 
-namespace bridgeir::symbolic {
+namespace brrr::symbolic {
 
 struct ExprTerm;
 using Expr = std::shared_ptr<const ExprTerm>;
 
-// v0 expression grammar: constants, unknowns, sums, products.
-// (floor/mod syntax is deferred; alignment is reasoned about via facts, not syntax.)
+// Expressions: constants, atoms, sums, products, and division by a positive
+// constant (floordiv rounds toward -inf, ceildiv toward +inf, mod is in [0, c)).
+// Subtraction is a sum with a -1 factor. Atom names: `%7` (a value, by id),
+// `tile` (a module symbol), `?%7.0` (dim(%7, 0)). A division's divisor is
+// args[1], always a positive Const.
 struct ExprTerm {
-  enum class Kind { Const, Var, Add, Mul };
+  enum class Kind { Const, Var, Add, Mul, FloorDiv, CeilDiv, Mod };
   Kind kind = Kind::Const;
   int64_t c = 0;        // Kind::Const
   std::string name;     // Kind::Var
@@ -32,14 +35,40 @@ struct ExprTerm {
   static Expr var(std::string name);
   static Expr add(std::vector<Expr> xs);
   static Expr mul(std::vector<Expr> xs);
+  static Expr div(Kind kind, Expr e, int64_t c);  // FloorDiv | CeilDiv | Mod
+  // The same kind of node over new arguments (used by every rewrite).
+  static Expr rebuild(const Expr& like, std::vector<Expr> args);
+  bool isDivision() const {
+    return kind == Kind::FloorDiv || kind == Kind::CeilDiv || kind == Kind::Mod;
+  }
 };
 
 std::string pretty(const Expr& e);
 bool structurallyEqual(const Expr& a, const Expr& b);
 
+// `e` as c + sum(coeff * atom), when it is linear (degree <= 1 after expanding).
+bool linearize(const Expr& e, int64_t* c, std::map<std::string, int64_t>* coeffs);
+
 enum class Tri { Yes, No, Unknown };
 const char* toString(Tri t);
 
+namespace z3 {
+class Session;
+}
+
+// Who decides what the fast paths leave open (BRRR_SOLVER=z3|local|check):
+//   z3     Z3 decides (the default when Brrr was built with Z3)
+//   local  the hand-written fallback (intervals, same-shape implication)
+//   check  both; Z3's answer is used, and any disagreement is printed to
+//          stderr as "solver check:" — the way to audit the fallback
+enum class Backend { Local, Z3, Check };
+Backend backend();
+const char* backendName();
+size_t solverDisagreements();
+
+// Facts, and Yes/No/Unknown questions about them. Two fast paths are theorems,
+// not searches, and always run first: equal polynomial normal forms (Yes) and a
+// nonzero constant difference (No). Everything else goes to the backend.
 class Solver {
  public:
   // Facts (constraints asserted by schemas, importers, or agents).
@@ -64,12 +93,36 @@ class Solver {
   // connectors.
   Expr subst(const Expr& e) const;
 
+  // The value of `e` when the facts pin it to a single integer.
+  std::optional<int64_t> constantValue(const Expr& e) const;
+
  private:
   struct Interval {
     std::optional<int64_t> lo, hi;
   };
 
-  std::map<std::string, Expr> substMap() const;
+  // The local fallback (see Backend).
+  Tri localIsEqual(const Expr& a, const Expr& b) const;
+  Tri localIsLess(const Expr& a, const Expr& b) const;
+  Tri localAligned(const Expr& e, int64_t modulus) const;
+  Tri localLessOrEqual(const Expr& a, const Expr& b) const;
+  std::optional<int64_t> localConstantValue(const Expr& e) const;
+
+  // This solver's facts in Z3, built on first use. A copy starts without one:
+  // copies add their own facts (e.g. a branch condition), so they cannot share.
+  struct LazySession {
+    std::unique_ptr<z3::Session> p;
+    LazySession();
+    ~LazySession();
+    LazySession(const LazySession&);
+    LazySession& operator=(const LazySession&);
+  };
+  z3::Session& session() const;
+  Tri decide(Tri local, Tri z3, const char* what, const Expr& a, const Expr& b) const;
+
+  // Equalities oriented into `atom -> expression` with no atom on its own right
+  // side and no mapped atom on any right side, so one pass substitutes fully.
+  const std::map<std::string, Expr>& substMap() const;
   Interval evalInterval(const Expr& e) const;
   std::optional<int64_t> residueOf(const Expr& e, int64_t m) const;
 
@@ -77,6 +130,10 @@ class Solver {
   std::vector<std::pair<Expr, Expr>> le_facts_;
   std::map<std::string, std::pair<int64_t, int64_t>> ranges_;
   std::vector<std::tuple<std::string, int64_t, int64_t>> mods_;
+  mutable std::map<std::string, Expr> subst_map_;
+  mutable std::vector<std::pair<Expr, Expr>> residual_;  // equalities not oriented
+  mutable bool subst_valid_ = false;
+  mutable LazySession z3_;
 };
 
-}  // namespace bridgeir::symbolic
+}  // namespace brrr::symbolic

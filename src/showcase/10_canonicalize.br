@@ -1,0 +1,21 @@
+# canonicalize: every integer expression -> its simplest proven-equal form.
+#
+# A pass is one C++ file (src/passes/canonicalize.cpp). For each expression it
+# tries, in order: a constant pinned by the facts in scope; then Z3's algebraic
+# simplification, kept only if smaller AND proven equal by the solver.
+#
+# Try: brrr run src/showcase/10_canonicalize.br --passes=canonicalize
+#      brrr show r1            # %a = apply 4 * %i, %b = apply 128, %c = apply 3 + %i
+#      brrr show r1@1 --record # the journal lists each rewrite: from -> to
+# (needs a build with Z3; without it the pass only folds constants it can prove)
+
+fact tile = 32
+
+func @f(%n: index, %i: index, %x: tensor<[%n], f32>) -> index {
+  fact %n = 4 * tile
+  %a = apply %i * 4 + %n - %n            # algebra: 4 * %i
+  %b = apply (%n floordiv 32) * tile     # facts: %n = 128, so 4 * 32 = 128
+  %c = apply (2 * %i + 6) floordiv 2     # exact division: 3 + %i
+  %y = reshape %x : tensor<[%n * 1 + 0], f32>   # result dims too: [128]
+  return %a                              # the signature stays as written
+}

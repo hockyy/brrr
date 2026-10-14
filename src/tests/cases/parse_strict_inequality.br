@@ -1,0 +1,5 @@
+# expect: strict inequalities are not supported
+func @f(%n: index) {
+  fact 0 < %n
+  return
+}

@@ -1,11 +1,11 @@
-# BridgeIR — working notes (scratch)
+# Brrr — working notes (scratch)
 
 Non-paper material. Paper prose lives one level up (`main.tex` + `sections/`).
 This file is the design/decision log; promote items into the paper as they stabilize.
 
 ## Goal
 
-BridgeIR: a compiler + IR stack that is
+Brrr: a compiler + IR stack that is
 
 - plug-and-play at runtime,
 - operable/extensible by agents end to end — pipelines, pass definitions, verifiers,
@@ -112,7 +112,7 @@ minted per compilation. They compose: e.g. an S2 rewrite set enters via T2.)
 - `~/pg/llvm-project` @ `85081add2d8b` (2026-09-04), LLVM 24.0.0git, at
   `~/pg/llvm-project/build`. Config: Release+asserts, `LLVM_ENABLE_PROJECTS=mlir`,
   `LLVM_TARGETS_TO_BUILD=Native`, `BUILD_SHARED_LIBS=OFF` (static `.a` libs),
-  `LLVM_ENABLE_RTTI=OFF`. Retained for bishengir/reference; no longer BridgeIR's
+  `LLVM_ENABLE_RTTI=OFF`. Retained for bishengir/reference; no longer Brrr's
   substrate.
 - System: Fedora 44, stock LLVM 22.1.8 (`llvm-devel` installed); `mlir`/`mlir-devel`
   available (~174/215 MiB installed). Useful for interop spelunking only.
@@ -174,7 +174,7 @@ into (backends, frontends) via adapters.
   Must commit before writing the design section.
 - Evaluation: agent operability (task success, time-to-first-extension, tokens,
   error recovery) + extension cost (time-to-add, files touched in core) + compile
-  latency under generation. Baselines: MLIR/`mlir-opt` workflows vs BridgeIR.
+  latency under generation. Baselines: MLIR/`mlir-opt` workflows vs Brrr.
 - Core concepts: lock scope model (flat + scope edges vs nested groups), text syntax,
   selector grammar. See `from-scratch-core.md` §Open decisions.
 - Core gaps demanded by external-IR mapping (named port groups, blocks/args/yields,
@@ -187,13 +187,13 @@ into (backends, frontends) via adapters.
 
 ### Candidate titles
 
-- BridgeIR: An IR Made for Agents
-- BridgeIR: An Agent-Native Compiler That Is Extendable, Fast, and Loose
+- Brrr: An IR Made for Agents
+- Brrr: An Agent-Native Compiler That Is Extendable, Fast, and Loose
 - Compiling by Generation: Staged Self-Specialization for Agent-Assisted Compilers
 
 ## Decision log
 
-- 2026-10-13: repo `hockyy/BridgeIR` created (private); local `~/pg/BridgeIR`.
+- 2026-10-13: repo `hockyy/Brrr` created (private); local `~/pg/Brrr`.
 - 2026-10-13: `docs/` = the paper (LaTeX); scratch = `docs/scratch/`; `src/` = code.
 - 2026-10-13: vision recorded (extendable/fast/loose; feedback-first; sustainable;
   reuse-not-recode).
@@ -209,7 +209,7 @@ into (backends, frontends) via adapters.
   Spec: `from-scratch-core.md`.
 - 2026-10-13: dual identity adopted: stable machine ids (never renumbered) +
   human/agent-editable node names (unique per scope; renames journaled). Prototype:
-  `bridgeir rename`, name-aware references and printing.
+  `brrr rename`, name-aware references and printing.
 - 2026-10-13: symbols + typing design (`symbols-and-types.md`): all names are
   bindings (value vs symbol class); symbol refs become `Ref` data (`@name`,
   `@mod::@fn`); typing rules are schema data solved by unification. Prototype:
@@ -230,12 +230,12 @@ into (backends, frontends) via adapters.
   a runtime guard instead of an assumption.
 - 2026-10-13: symbols/facts promoted to **first-hand language features**: `fact`
   lines in `.br` documents (equality / aligned / range), expression parser,
-  consistency checks at apply time; `bridgeir facts` + `bridgeir fold-reshape`
+  consistency checks at apply time; `brrr facts` + `brrr fold-reshape`
   demo passes reading facts straight from the IR text. (User's point: the ability
   must be native to the language, not a bolted-on library.)
 - 2026-10-13: schema registry v0 wired: kinds with named ports / results policy /
   typed attrs; validation on every load (`check`), foreign vocabulary warned;
-  inheritance (`kind X < Parent`) + traits; `bridgeir schema|check`, `--schemas=`;
+  inheritance (`kind X < Parent`) + traits; `brrr schema|check`, `--schemas=`;
   examples converged (`ret` -> `func.return`, `load` -> `llvm.load`).
 - 2026-10-13: paradigm recorded (`paradigm.md`): **procedural core + object-shaped
   data** (explicitly not Java-style OO: no method dispatch on objects, no class
@@ -447,7 +447,7 @@ into (backends, frontends) via adapters.
   is **C++**: the internal core types (primitives + language skeleton) are defined
   beforehand and registered by the compiler at startup, so the default resolution
   of `float16` / `int32` / `index` / `bool` requires no `import` and no `.bs` file,
-  and `bridgeir schema` reflects them from the registration. A `core.bs` may be
+  and `brrr schema` reflects them from the registration. A `core.bs` may be
   generated for reference; if a module exports or aliases it, that is an **alias to
   the internal set** (same identity), never a redefinition. Consequence: `.bs`
   modules declare *extensions* — records, classes, extra kinds, hook bindings —
@@ -611,6 +611,72 @@ into (backends, frontends) via adapters.
   This is the interim shape: the identifiers-as-names migration makes the printed
   ids *be* the C++ names, so the surface reads `block (int64 acc)` again — with
   `acc` as the actual identifier rather than an alias beside it.
+- 2026-10-14: **v1 language** (`syntax-v1.md`, now the single source of truth for the
+  surface). Review verdict on v0: decisions were being recorded faster than code
+  used them (phi added then removed, `param` "deleted" but still everywhere, ~20
+  concepts against a budget of 6), ids were hand-written, values were untyped and
+  attributes stringly. v1: MLIR-familiar sigils (`%v`, `^b`, `@f`), types on values,
+  successor arguments on the branch (no `edge` nodes), header arguments (no `param`
+  nodes). Ids stay stable but leave the default view: `print` is clean, `print --ids`
+  is the stored form, and edited clean text gets its ids back by name matching
+  (`reconcileIds`). Removed: edge/param nodes, C++ sugar, the C-like view, the
+  `dims`/`dtype`/`expr`/`sym` attribute types. The 25 v0 tests and all examples
+  were rewritten; the old scratch notes below describe v0 syntax.
+- 2026-10-14: **expressions as values.** Dims, facts, and integer operands are
+  expressions whose atoms are SSA values, so binding a symbol is defining a value
+  and SSA scoping is symbol scoping. Kinds declare their meaning (`expr: lhs - rhs`)
+  and shape rules (`shape: [M, K], [K, N] -> [M, N]`) as schema data. An operand
+  is a value, an expression, or a list of expressions — this replaces MLIR's
+  `OpFoldResult`, static/dynamic operand pairs, and `kDynamic`. Attributes keep only
+  configuration. `?` in a type is a fresh dimension with identity (`dim(%x, k)`);
+  the solver got a polynomial normal form, an acyclic substitution (v0's `a = b`
+  facts ping-ponged), and residual equalities.
+- 2026-10-14: **soundness.** Signedness lives on the type (`iN`/`uN`/`index`), not
+  the op; typed atoms carry their range; a value has a meaning only if it cannot
+  wrap (`index` always, `iN`/`uN` with `nsw`/`nuw`). Facts got roles: module =
+  assumption, function args = precondition, block args = invariant checked on every
+  incoming edge with branch conditions (loops by induction), op results = lemma.
+  Unknown equations are warnings, errors under `--strict`, or runtime `guard`s via
+  `insert-guards`. Fixed in passing: v0 refuted `fact 0 <= n` whenever `n` was known
+  positive (it tested the wrong direction).
+- 2026-10-14: **tier-2 expressions + the affine bridge.** `floordiv`/`ceildiv`/`mod`
+  by positive constants (MLIR's quasi-affine fragment); no `/`, because integer
+  division must say how it rounds. Exact when divisible, else an opaque term with
+  its defining bounds. `apply` = an expression as a value. `to-affine` /
+  `from-affine` convert exactly; export picks each operand's `OpFoldResult` side
+  (static / value / `affine.apply`) from the solver, and splits dims from symbols by
+  SSA position. Tier 3 (`min`/`max`) deferred; division by values never.
+- 2026-10-14: **runs.** A compile is a recorded history: runs have ids, every stage
+  stores before/after states (content-addressed), any stage can be shown, branched
+  from, or resumed with an edited `pipeline.txt` or a hand-edited IR (`--state`, ids
+  reconciled). Each stage must verify and round-trip through text or it is rolled
+  back. Pass registry with names and summaries (`brrr passes`).
+- 2026-10-14: core and portability: `Module::find` is an id->index map (was a linear
+  scan), journaled `replaceAllUses`/`erase`/`setType`/`rename`; MinGW builds link the
+  runtime statically, output is LF on Windows, the SymPy connector no longer needs a
+  POSIX shell. All four ctest suites pass on Windows.
+- 2026-10-14: **Z3 behind the solver interface** (`solver.md`). Hand-written
+  derivation does not scale: the local rules kept needing soundness fixes (half-bounded
+  interval products, overflowed corners). Z3 now answers every question as a
+  validity check over mathematical integers, with a 200 ms timeout that maps to
+  Unknown. The local rules stay as the fallback when Z3 is not built and as a
+  cross-check: `BRRR_SOLVER=check` asks both and reports Yes/No disagreements,
+  and the suite runs that sweep over every file. Z3 is optional at build time
+  (`BRRR_Z3`, `third_party/z3`); the core has no hard dependency on it.
+- 2026-10-14: **a pass is one C++ file.** `passes/pass.h` is the whole pass API
+  (`Context`, `PassInfo`, `BRRR_PASS`). The build globs `passes/*.cpp` into an
+  object library, so adding a pass touches no list. The core (`brrr_core`: IR,
+  parser/printer, schema, solver, sema) is the only exposed API; passes and the CLI
+  are clients of it. First solver-backed pass: `canonicalize`, which rewrites every
+  integer expression (operands, list elements, result dims) to a constant pinned
+  by the facts or to Z3's simplification. A rewrite is kept only when it is smaller
+  and proven equal, so Z3's simplifier proposes and the solver checks.
+- 2026-10-14: **renamed BridgeIR -> Brrr** ("Bot-Readable, Reasoned, Reproducible";
+  compiler go brrr). Agents read it, the solver backs its claims, and runs are recorded
+  and replayable. The file extension stays `.br`. Renamed everywhere: the C++
+  namespace `brrr`, the CMake targets, the binary, `BRRR_*` variables and macros, the
+  `.brrr/` run store, and the docs. Older entries above were rewritten with the new
+  name.
 - Substrate: own library (C++20, no heavy deps).
 - Agent runtime target: T0–T3 without rebuild; T4 via plugins.
 

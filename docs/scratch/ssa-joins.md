@@ -1,5 +1,9 @@
 # SSA joins: phi vs block arguments — and the alternatives
 
+> **2026-10-14:** written for the v0 text format (`nN name = kind ...`, edge and
+> param nodes). The current language is [`syntax-v1.md`](syntax-v1.md); the
+> reasoning here still stands where v1 does not say otherwise.
+
 > **2026-10-13 resolution:** this note steelmans phi, and the analysis stands — but
 > the decision went the other way and was then made final: **phi has been removed
 > from the language.** A block's arguments, fed by its incoming `edge` values, are
@@ -8,7 +12,7 @@
 > maps clang output without phi. See `design-notes.md`.
 
 Status: design note, 2026-10-13. Companion to `control-flow.md` (mechanism and the
-block-argument form BridgeIR ships as canonical). This note steelmans phi nodes,
+block-argument form Brrr ships as canonical). This note steelmans phi nodes,
 then surveys every alternative for representing joins.
 
 ## The dichotomy
@@ -26,7 +30,7 @@ The information is identical. The difference is *where the parallel copy lives*.
 
 1. **Minimal instruction surface.** Branch ops need only successor labels. Block
    arguments require successor-operand segmentation (MLIR: `BranchOpInterface` +
-   `getSuccessorOperands`; BridgeIR: an `edge` kind, plus an arity checker and a
+   `getSuccessorOperands`; Brrr: an `edge` kind, plus an arity checker and a
    negative test we had to write). Fewer invariants for the core.
 2. **Def-side analysis ergonomics.** "Who feeds this value?" is answered at the
    definition; def-use chains are complete on the value itself. With block
@@ -123,7 +127,7 @@ target typing. What remains in C++ is exactly the **relational residue**
 is level 3's job: state them as constraints, check (or discharge) them with one
 engine instead of per-kind code.
 
-## BridgeIR stance
+## Brrr stance
 
 Canonical form: block arguments
 (`edge` + `param`). `phi` was removed (2026-10-13) — LLVM/clang imports map

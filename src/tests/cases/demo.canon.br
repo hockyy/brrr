@@ -1,8 +1,0 @@
-# bridgeir v0
-func @add(n1) {
-  n2 = param idx=0 other=2
-  n3 = param idx=1
-  n4 sum = add n2 n3 beta=1.5
-  n6 = relu sum
-  n5 out = func.return n6
-}

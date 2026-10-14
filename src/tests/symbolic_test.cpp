@@ -1,11 +1,14 @@
 // Symbolic inference prototype: "do these two symbols have the same value?"
 // answered mathematically, with tri-state results and honest Unknowns.
+#include <climits>
 #include <cstdio>
 #include <string>
 
+#include "symbolic/expr_io.h"
+#include "symbolic/facts.h"
 #include "symbolic/symbolic.h"
 
-using namespace bridgeir::symbolic;
+using namespace brrr::symbolic;
 
 static int failures = 0;
 
@@ -130,6 +133,119 @@ int main() {
                 toString(same));
     expect(same == Tri::Unknown,
            "fold-reshape: unknowns fall back instead of assuming");
+  }
+
+  // 8. Products commute and distribute: numel([n, m]) == numel([m * n]).
+  {
+    Solver s;
+    expect(s.isEqual(Mul({V("n"), V("m")}), Mul({V("m"), V("n")})) == Tri::Yes,
+           "n * m == m * n (polynomial normal form)");
+    expect(s.isEqual(Mul({V("n"), V("m")}), Add({V("n"), V("m")})) == Tri::Unknown,
+           "n * m == n + m stays Unknown");
+  }
+
+  // 9. `a = b` between two atoms no longer ping-pongs in substitution.
+  {
+    Solver s;
+    s.assertEqual(V("k"), V("n"));
+    s.assertEqual(V("n"), C(64));
+    expect(s.isEqual(V("k"), C(64)) == Tri::Yes, "k = n, n = 64  =>  k == 64");
+    expect(s.isEqual(V("k"), V("n")) == Tri::Yes, "k == n after both are mapped");
+  }
+
+  // 10. A linear equation is solved for a unit-coefficient atom.
+  {
+    Solver s;
+    s.assertEqual(Add({V("m"), C(1)}), V("n"));
+    s.assertEqual(V("n"), C(10));
+    expect(s.constantValue(V("m")) == std::optional<int64_t>(9), "m + 1 = n, n = 10  =>  m == 9");
+  }
+
+  // 11. A nonlinear assumption proves exactly itself (a guard on n * m = n + m).
+  {
+    Solver s;
+    s.assertEqual(Mul({V("n"), V("m")}), Add({V("n"), V("m")}));
+    expect(s.isEqual(Add({V("m"), V("n")}), Mul({V("m"), V("n")})) == Tri::Yes,
+           "an unorientable equality still proves itself");
+  }
+
+  // 12. Facts: `0 <= n` is consistent when n is known positive (a v0 bug
+  //     refuted it), chains apply every link, strict `<` is rejected.
+  {
+    Solver s;
+    std::string err;
+    expect(applyFact("fact range(n, 5, 10)", s, &err), "range(n, 5, 10)");
+    expect(applyFact("fact 0 <= n", s, &err), "0 <= n is consistent with n in [5, 10]: " + err);
+    expect(applyFact("fact 0 <= i <= n", s, &err) && s.lessOrEqual(V("i"), V("n")) == Tri::Yes,
+           "a chain asserts every link");
+    expect(!applyFact("fact i < n", s, &err), "strict < is rejected");
+    expect(!applyFact("fact n = 11", s, &err), "n = 11 contradicts the range");
+  }
+
+  // 13. Expression text: subtraction, dim(%x, k), minimal parentheses.
+  {
+    std::string err;
+    const Expr e = parseExpr("2 * (%n - 1) + dim(%x, 0)", &err);
+    expect(e && printExpr(e) == "2 * (%n - 1) + dim(%x, 0)", "parse/print round trip: " +
+                                                                  (e ? printExpr(e) : err));
+    Solver s;
+    expect(s.isEqual(e, parseExpr("dim(%x, 0) + 2 * %n - 2", &err)) == Tri::Yes,
+           "2 * (%n - 1) + dim(%x, 0) == dim(%x, 0) + 2 * %n - 2");
+  }
+
+  // 14. Division by a positive constant: floor/ceil semantics on negatives,
+  //     exact division, mod as e - c * floordiv(e, c), defining bounds.
+  {
+    std::string err;
+    Solver s;
+    auto E = [&](const char* t) { return parseExpr(t, &err); };
+    expect(s.constantValue(E("-7 floordiv 2")) == std::optional<int64_t>(-4), "-7 floordiv 2 == -4");
+    expect(s.constantValue(E("-7 ceildiv 2")) == std::optional<int64_t>(-3), "-7 ceildiv 2 == -3");
+    expect(s.constantValue(E("-7 mod 2")) == std::optional<int64_t>(1), "-7 mod 2 == 1");
+    expect(s.isEqual(E("(4 * n + 8) floordiv 4"), E("n + 2")) == Tri::Yes, "exact division");
+    expect(s.isEqual(E("n mod 4"), E("n - 4 * (n floordiv 4)")) == Tri::Yes, "mod via floordiv");
+    expect(s.isEqual(E("n ceildiv 4"), E("(n + 3) floordiv 4")) == Tri::Yes, "ceildiv via floordiv");
+    expect(s.lessOrEqual(E("n"), E("(n ceildiv 32) * 32")) == Tri::Yes, "a ceildiv covers n");
+    expect(s.lessOrEqual(E("(n floordiv 8) * 8"), E("n")) == Tri::Yes, "a floordiv stays below n");
+    expect(s.isEqual(E("n floordiv 2"), E("n")) == Tri::Unknown, "n floordiv 2 == n is Unknown");
+    expect(!parseExpr("n / 2", &err), "`/` is rejected");
+    expect(!parseExpr("n floordiv m", &err), "division by a value is rejected");
+    expect(printExpr(E("x * (y floordiv 3)")) == "x * (y floordiv 3)" &&
+               printExpr(E("x * y floordiv 3")) == "(x * y) floordiv 3",
+           "precedence survives printing");
+  }
+
+  // 15. Interval soundness (two bugs found 2026-10-14): a product of
+  //     half-bounded intervals, and corner products that overflow.
+  {
+    Solver s;
+    std::string err;
+    applyFact("fact 0 <= n", s, &err);
+    applyFact("fact 0 <= m", s, &err);
+    expect(s.lessOrEqual(C(0), Mul({V("n"), V("m")})) == Tri::Yes,
+           "[0, inf) * [0, inf) is non-negative");
+    expect(s.lessOrEqual(Mul({V("n"), V("m")}), C(0)) == Tri::Unknown,
+           "...and not bounded above (it was [0, 0])");
+    Solver big;
+    big.assertRange("x", INT64_MIN / 2, INT64_MAX / 2);
+    expect(big.lessOrEqual(Mul({V("x"), V("x")}), C(0)) == Tri::Unknown,
+           "an overflowing corner product makes the interval unknown, not partial");
+  }
+
+  // 16. With Z3 behind the solver, questions the local rules leave open are
+  //     decided: transitivity needs a real decision procedure.
+  if (backend() != Backend::Local) {
+    Solver s;
+    s.assertLe(V("x"), V("y"));
+    s.assertLe(V("y"), V("z"));
+    expect(s.lessOrEqual(V("x"), V("z")) == Tri::Yes, "z3: x <= y, y <= z  =>  x <= z");
+    expect(s.lessOrEqual(V("z"), V("x")) == Tri::Unknown, "z3: z <= x stays Unknown");
+    Solver t;
+    t.assertEqual(Add({Mul({C(2), V("a")}), V("b")}), C(10));
+    t.assertEqual(Add({V("a"), Mul({C(-1), V("b")})}), C(2));
+    expect(t.constantValue(V("a")) == std::optional<int64_t>(4), "z3: 2a + b = 10, a - b = 2 => a == 4");
+  } else {
+    std::printf("      (built without Z3: z3 tests skipped)\n");
   }
 
   if (failures == 0) std::printf("\nall symbolic tests passed\n");

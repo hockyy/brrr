@@ -1,8 +1,0 @@
-# Contradictory facts must be rejected when the store is built.
-fact N = 12
-fact aligned(N, 16)
-
-func @bad(n1) {
-  n2 x = load dtype="f16" shape="N"
-  n3 = func.return x
-}

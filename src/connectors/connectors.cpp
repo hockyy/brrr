@@ -2,30 +2,76 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <string>
 
-namespace bridgeir::connectors {
+#include "symbolic/expr_io.h"
+
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
+
+namespace brrr::connectors {
 namespace {
 
-// Our expression grammar (identifiers, integers, "+", "*", parentheses) is safe
-// inside single quotes, so it can be embedded directly into a shell command.
-std::string runPython(const std::string& code, const std::string& arg1,
-                      const std::string& arg2) {
-  const std::string cmd = "timeout 10 python3 -c '" + code + "' '" + arg1 +
-                          "' '" + arg2 + "' 2>/dev/null";
-  FILE* f = ::popen(cmd.c_str(), "r");
+#ifdef _WIN32
+constexpr const char* kNull = "NUL";
+#else
+constexpr const char* kNull = "/dev/null";
+#endif
+
+// Runs `python <script> "<a>" "<b>"` and returns its first output line. The
+// script travels through a file and the arguments through double quotes, which
+// POSIX sh and cmd.exe both accept; the arguments are sanitized expressions
+// (identifiers, integers, + - * and parentheses), so nothing needs escaping.
+std::string runPython(const std::string& python, const std::string& code,
+                      const std::string& a, const std::string& b) {
+  const auto script = std::filesystem::temp_directory_path() / "brrr_sympy.py";
+  std::ofstream(script, std::ios::binary) << code;
+  std::string cmd;
+#ifndef _WIN32
+  cmd = "timeout 10 ";
+#endif
+  cmd += python + " \"" + script.string() + "\" \"" + a + "\" \"" + b + "\" 2>" + kNull;
+  FILE* f = popen(cmd.c_str(), "r");
   if (!f) return {};
   char buf[128] = {0};
   const bool got = std::fgets(buf, sizeof buf, f) != nullptr;
-  ::pclose(f);
+  pclose(f);
   return got ? std::string(buf) : std::string();
+}
+
+// SymPy cannot read our atom spellings (`%7`, `dim(%7, 0)`), so every atom is
+// renamed s0, s1, ... consistently across both sides of the question.
+Expr renameAtoms(const Expr& e, std::map<std::string, std::string>* names) {
+  using symbolic::ExprTerm;
+  if (e->kind == ExprTerm::Kind::Const) return e;
+  if (e->kind == ExprTerm::Kind::Var) {
+    auto it = names->find(e->name);
+    if (it == names->end()) {
+      it = names->emplace(e->name, "s" + std::to_string(names->size())).first;
+    }
+    return ExprTerm::var(it->second);
+  }
+  std::vector<Expr> args;
+  for (const Expr& a : e->args) args.push_back(renameAtoms(a, names));
+  return ExprTerm::rebuild(e, std::move(args));
 }
 
 }  // namespace
 
 Hub::Hub() {
-  sympy_available_ =
-      std::system("python3 -c 'import sympy' >/dev/null 2>&1") == 0;
+  for (const char* py : {"python3", "python"}) {
+    const std::string probe = std::string(py) + " -c \"import sympy\" >" + kNull + " 2>&1";
+    if (std::system(probe.c_str()) == 0) {
+      python_ = py;
+      sympy_available_ = true;
+      break;
+    }
+  }
 }
 
 Answer Hub::isEqual(const Solver& facts, const Expr& a, const Expr& b) {
@@ -69,8 +115,9 @@ Answer Hub::askSympyEqual(const Expr& a, const Expr& b) {
   ++external_calls_;
   Answer ans;
   ans.source = "connector@sympy";
-  const std::string out =
-      runPython(kScript, symbolic::pretty(a), symbolic::pretty(b));
+  std::map<std::string, std::string> names;
+  const std::string out = runPython(python_, kScript, symbolic::printExpr(renameAtoms(a, &names)),
+                                    symbolic::printExpr(renameAtoms(b, &names)));
   if (out.rfind("Yes", 0) == 0) {
     ans.tri = Tri::Yes;
     ans.detail = "sympy.simplify(a - b).is_zero";
@@ -83,4 +130,4 @@ Answer Hub::askSympyEqual(const Expr& a, const Expr& b) {
   return ans;
 }
 
-}  // namespace bridgeir::connectors
+}  // namespace brrr::connectors

@@ -1,6 +1,10 @@
-# BridgeIR core — v0 spec (from-scratch library)
+# Brrr core — v0 spec (from-scratch library)
 
-Decision: **2026-10-13 — BridgeIR owns its IR/library, concepts included.** Rationale:
+> **2026-10-14:** written for the v0 text format (`nN name = kind ...`, edge and
+> param nodes). The current language is [`syntax-v1.md`](syntax-v1.md); the
+> reasoning here still stands where v1 does not say otherwise.
+
+Decision: **2026-10-13 — Brrr owns its IR/library, concepts included.** Rationale:
 architecture (data-first definitions, agent-native, feedback/provenance) + measured
 weight (MLIR build 6.0 GB; `bin` 3.4 GB = 146 tools statically carrying MLIR;
 `mlir-opt` 284 MB). MLIR interop is a *preference*: an optional adapter, never a

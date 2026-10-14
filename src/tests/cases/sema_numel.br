@@ -1,0 +1,5 @@
+# expect: element count: 2 * 3 == 8 is false
+func @f(%x: tensor<[2, 3], f32>) {
+  %y = reshape %x : tensor<[8], f32>
+  return
+}

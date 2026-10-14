@@ -6,11 +6,11 @@
 #include "connectors/connectors.h"
 #include "symbolic/symbolic.h"
 
-using bridgeir::connectors::Hub;
-using bridgeir::symbolic::Expr;
-using bridgeir::symbolic::ExprTerm;
-using bridgeir::symbolic::Solver;
-using bridgeir::symbolic::Tri;
+using brrr::connectors::Hub;
+using brrr::symbolic::Expr;
+using brrr::symbolic::ExprTerm;
+using brrr::symbolic::Solver;
+using brrr::symbolic::Tri;
 
 static int failures = 0;
 
@@ -26,8 +26,7 @@ static Expr Mul(std::vector<Expr> xs) { return ExprTerm::mul(std::move(xs)); }
 
 int main() {
   Hub hub;
-  expect(hub.sympyAvailable(),
-         "sympy connector available (python3 -c 'import sympy')");
+  expect(hub.sympyAvailable(), "sympy connector available (python3 or python, with sympy)");
 
   const Solver facts;
 
@@ -38,51 +37,47 @@ int main() {
     const int before = hub.externalCalls();
     const auto ans = hub.isEqual(facts, lhs, rhs);
     std::printf("      local:    (a+b)*2 == 2*a + 2*b   -> %s [%s]\n",
-                bridgeir::symbolic::toString(ans.tri), ans.source.c_str());
+                brrr::symbolic::toString(ans.tri), ans.source.c_str());
     expect(ans.tri == Tri::Yes && ans.source == "local" &&
                hub.externalCalls() == before,
            "local decides without calling the connector");
   }
 
-  // 2. Nonlinear identity: local is honest (Unknown), SymPy escalates to Yes.
+  // 2. Nonlinear identities are local too now: the solver's polynomial normal
+  //    form decides them, so the connector is not called.
   {
     const Expr lhs = Mul({Add({V("a"), V("b")}), Add({V("a"), V("b")})});
     const Expr rhs = Add({Mul({V("a"), V("a")}),
                           Mul({C(2), V("a"), V("b")}),
                           Mul({V("b"), V("b")})});
+    const int before = hub.externalCalls();
     const auto ans = hub.isEqual(facts, lhs, rhs);
-    std::printf("      escalate: (a+b)*(a+b) == a*a+2*a*b+b*b -> %s [%s]\n",
-                bridgeir::symbolic::toString(ans.tri), ans.source.c_str());
-    expect(ans.tri == Tri::Yes && ans.source == "connector@sympy",
-           "sympy proves the nonlinear identity");
+    std::printf("      local:    (a+b)*(a+b) == a*a+2*a*b+b*b -> %s [%s]\n",
+                brrr::symbolic::toString(ans.tri), ans.source.c_str());
+    expect(ans.tri == Tri::Yes && ans.source == "local" && hub.externalCalls() == before,
+           "the local solver proves the nonlinear identity");
 
-    const int calls = hub.externalCalls();
-    const auto again = hub.isEqual(facts, lhs, rhs);
-    expect(again.tri == Tri::Yes &&
-               again.detail.find("cached") != std::string::npos &&
-               hub.externalCalls() == calls,
-           "second identical query is served from cache");
+    const auto no = hub.isEqual(facts, Add({Mul({V("a"), V("a")}), C(1)}), Mul({V("a"), V("a")}));
+    std::printf("      local:    a*a + 1 == a*a            -> %s [%s]\n",
+                brrr::symbolic::toString(no.tri), no.source.c_str());
+    expect(no.tri == Tri::No && no.source == "local", "the local solver refutes a*a + 1 == a*a");
   }
 
-  // 3. External refutation of an identity (Yes means "equal for all values").
-  {
-    const auto ans = hub.isEqual(facts, Add({Mul({V("a"), V("a")}), C(1)}),
-                                 Mul({V("a"), V("a")}));
-    std::printf("      escalate: a*a + 1 == a*a            -> %s [%s]\n",
-                bridgeir::symbolic::toString(ans.tri), ans.source.c_str());
-    expect(ans.tri == Tri::No && ans.source == "connector@sympy",
-           "sympy refutes a*a + 1 == a*a");
-  }
-
-  // 4. Identity vs satisfiability: a*b == a holds at a = 0, so Unknown is the
-  //    mathematically correct answer, not No.
+  // 3. What the local solver leaves open escalates, and is cached by content.
+  //    a*b == a holds at a = 0, so Unknown is the mathematically correct answer
+  //    (an identity must hold for all values), not No.
   {
     const auto ans = hub.isEqual(facts, Mul({V("a"), V("b")}), V("a"));
     std::printf("      escalate: a*b == a                  -> %s [%s] "
                 "(satisfiable at a=0)\n",
-                bridgeir::symbolic::toString(ans.tri), ans.source.c_str());
-    expect(ans.tri == Tri::Unknown,
+                brrr::symbolic::toString(ans.tri), ans.source.c_str());
+    expect(ans.tri == Tri::Unknown && ans.source == "connector@sympy",
            "sympy keeps satisfiable-but-not-identical as Unknown");
+
+    const int calls = hub.externalCalls();
+    const auto again = hub.isEqual(facts, Mul({V("a"), V("b")}), V("a"));
+    expect(again.detail.find("cached") != std::string::npos && hub.externalCalls() == calls,
+           "a second identical query is served from the cache");
   }
 
   if (failures == 0) std::printf("\nall connector tests passed\n");

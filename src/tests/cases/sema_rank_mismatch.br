@@ -1,0 +1,5 @@
+# expect: rank mismatch
+func @f(%x: tensor<[4, 4], f16>, %y: tensor<[16], f16>) {
+  %z = add %x, %y
+  return
+}

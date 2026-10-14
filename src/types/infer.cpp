@@ -1,6 +1,6 @@
 #include "types/infer.h"
 
-namespace bridgeir::types {
+namespace brrr::types {
 namespace {
 
 TypeRef subst(const TypeRef& t, const std::vector<TypeRef>& map) {
@@ -77,4 +77,4 @@ InferResult infer(const std::vector<InferNode>& nodes,
   return res;
 }
 
-}  // namespace bridgeir::types
+}  // namespace brrr::types

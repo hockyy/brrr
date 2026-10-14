@@ -1,0 +1,9 @@
+# expect: carries 1 value(s) but takes 2
+func @f(%n: index) -> index {
+  %r = loop %n, %n {
+  ^iter(%i: index):
+    %more = icmp %i, 0 pred=gt
+    continue_if %more, %i
+  }
+  return %r
+}

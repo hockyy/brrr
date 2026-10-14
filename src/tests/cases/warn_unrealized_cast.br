@@ -1,0 +1,6 @@
+# expect: an unrealized cast remains
+func @f(%x: tensor<[4], f32>) -> tensor<[4], f32> {
+  %a = unrealized_cast %x : mydialect.buf<[4], f32>
+  %b = unrealized_cast %a : tensor<[4], f32>
+  return %b
+}

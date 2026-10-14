@@ -1,6 +1,6 @@
 #include "types/types.h"
 
-namespace bridgeir::types {
+namespace brrr::types {
 namespace {
 
 std::string varName(uint32_t id) {
@@ -132,4 +132,4 @@ bool Unifier::unifyImpl(const TypeRef& a0, const TypeRef& b0,
   return true;
 }
 
-}  // namespace bridgeir::types
+}  // namespace brrr::types

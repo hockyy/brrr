@@ -1,43 +1,28 @@
 # Mapping of: clang++ -O1 -S -emit-llvm on
 #   float dot(const float* a, const float* b, int n);
-# Blocks are scopes that take parameters. What LLVM spells as phi pairs is stated
-# here at the branch sites instead: each edge carries the values it delivers to its
-# target block. No phi, no from-block labels, no coverage to keep in sync.
-func @dot(n1) {
-  n2 = param idx=0 type="ptr<float>"
-  n3 = param idx=1 type="ptr<float>"
-  n4 = param idx=2 type="i32"
-  n5 zero_i32 = arith.constant type="i32" value="0"
-  n6 zero_f32 = arith.constant type="f32" value="0.0"
-  n7 one = arith.constant type="i64" value="1"
-
-  n8 entry = block {
-    n9 cond = icmp n4 zero_i32 pred="sgt"
-    n28 e_hdr = edge header                     # header takes no values
-    n29 e_exit0 = edge exit zero_f32            # was: phi [0.0, %entry]
-    n10 = cbr cond e_hdr e_exit0
-  }
-
-  n11 header = block {
-    n12 span = zext n4 type="i64"
-    n30 e_body0 = edge body zero_i32 zero_f32   # was: phi [0, %header], [0.0, %header]
-    n13 = br e_body0
-  }
-
-  n14 exit = block (f32 n15) {              # n15 was: phi [0.0, %entry], [%fma, %body]
-    n16 = func.return n15
-  }
-
-  n17 body = block (i32 n18, f32 n19) {
-    n20 next = arith.addi n18 one
-    n21 ap0 = gep n2 n18 elem="float"
-    n22 av0 = llvm.load n21 align=4
-    n23 ap1 = gep n3 n18 elem="float"
-    n24 av1 = llvm.load n23 align=4
-    n25 fma = llvm.fmuladd av0 av1 n19
-    n26 done = icmp next n12 pred="eq"
-    n31 e_exit1 = edge exit fma                 # was: phi [%fma, %body] -> exit
-    n32 e_self = edge body next fma             # was: phi [%next, %body], [%fma, %body]
-    n27 = cbr done e_exit1 e_self
-  }
+#
+# Blocks take arguments; each branch passes the values its target needs. Where
+# LLVM writes phi pairs (value, predecessor), the values sit at the branch sites
+# instead: no predecessor labels, nothing to keep in sync when the CFG changes.
+# LLVM-specific ops (llvm.*) are foreign vocabulary: accepted, reported, unchecked.
+func @dot(%a: ptr, %b: ptr, %n: i32) -> f32 {
+  %zero_i32 = const 0 : i32
+  %zero_f32 = const 0.0 : f32
+  %cond = icmp %n, %zero_i32 pred=gt
+  cond_br %cond, ^header, ^exit(%zero_f32)            # was: phi [0.0, %entry] in exit
+^header:
+  %span = llvm.zext %n : i64
+  %zero_i64 = const 0 : i64
+  br ^body(%zero_i64, %zero_f32)                      # was: phi [0, %header], [0.0, %header]
+^body(%i: i64, %acc: f32):
+  %next = add %i, 1 nsw=true
+  %pa = llvm.gep %a, %i elem=f32 : ptr
+  %va = llvm.load %pa align=4 : f32
+  %pb = llvm.gep %b, %i elem=f32 : ptr
+  %vb = llvm.load %pb align=4 : f32
+  %fma = llvm.fmuladd %va, %vb, %acc : f32
+  %done = icmp %next, %span pred=eq
+  cond_br %done, ^exit(%fma), ^body(%next, %fma)      # was: phi [%fma, %body], [%next, %body]
+^exit(%r: f32):
+  return %r
 }

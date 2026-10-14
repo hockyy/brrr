@@ -1,0 +1,24 @@
+# 02 — Facts. A fact holds where it is written and in every scope inside it.
+# Where it is written decides who has to prove it:
+#
+#   module level            an assumption (configuration)         trusted
+#   function, on arguments  a precondition                        the caller
+#   block, on arguments     an invariant                          every incoming edge
+#   about an op's result    a lemma                               what precedes it
+#
+#   brrr facts src/showcase/02_facts.br
+#   brrr ask   src/showcase/02_facts.br @split "%n == 128 * %tiles"   -> Yes
+#   brrr ask   src/showcase/02_facts.br root "aligned(tile, 16)"     -> Yes
+#
+# Try: change the last fact to `%n >= 256` — `brrr check` reports that it
+# does not follow from what precedes it.
+fact tile = 128
+fact aligned(tile, 16)
+
+func @split(%tiles: index) -> index {
+  fact range(%tiles, 1, 512)       # precondition
+  %n = mul %tiles, tile            # an expression operand: %n means %tiles * tile
+  fact aligned(%n, 128)            # lemma: follows from the definition
+  fact %n >= 128                   # lemma: follows from the range
+  return %n
+}

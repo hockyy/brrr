@@ -8,7 +8,7 @@ MIR~\cite{mir} is designed for borrow-checking and interpreted by Miri, demonstr
 IR-as-executable. Functional compilers contribute typed cores and the many-small-IRs
 discipline: GHC Core/STG~\cite{peytonjones1992stg}, Core Erlang~\cite{coreerlang}, and
 the nanopass framework~\cite{keep2013nanopass}, which auto-generates a verifier for
-every tiny stage language. BridgeIR borrows the small-stage philosophy but makes stage
+every tiny stage language. Brrr borrows the small-stage philosophy but makes stage
 definitions and their checks data, and keeps node identity stable across stages.
 
 \paragraph{ML compilers and tensor IRs.} XLA's HLO and StableHLO~\cite{stablehlo}
@@ -19,7 +19,7 @@ algorithm from schedule~\cite{ragankelley2013halide}; PyTorch's FX~\cite{pytorch
 keeps the graph as data structures in the host language. TASO~\cite{jia2019taso},
 egg~\cite{willsey2021egg}, egglog~\cite{zhang2023better}, Ruler~\cite{nandi2021ruler},
 and relational e-matching~\cite{zhang2022relational} contribute equivalence-based
-rewriting and rule inference. BridgeIR adopts schedules-as-data and
+rewriting and rule inference. Brrr adopts schedules-as-data and
 equality-friendly rewriting, but targets whole-pipeline agent operation rather than
 single-kernel optimization.
 
@@ -28,7 +28,7 @@ descendants~\cite{barnett2005boogie} — place contracts at the center of the
 representation. Production IR verifiers (JVM~\cite{jvmspec}, wasm~\cite{haas2017wasm},
 eBPF~\cite{ebpf}, SPIR-V~\cite{spirvspec}) demonstrate strong static checking
 precedents, and database optimizers show how to record derivation
-history~\cite{graefe1995cascades}. BridgeIR lifts both ideas to every transformation:
+history~\cite{graefe1995cascades}. Brrr lifts both ideas to every transformation:
 transactional commits with invariant gates, and deltas with provenance as first-class
 values.
 
@@ -41,7 +41,7 @@ performs reinforcement-learning-driven optimization tuning. All of these operate
 IRs designed for human pass authors. To our knowledge, no system redesigns the IR
 itself around agent affordances.
 
-\paragraph{Positioning.} BridgeIR combines four elements we did not find together in
+\paragraph{Positioning.} Brrr combines four elements we did not find together in
 any surveyed system: stable node identity that survives passes and serialization;
 definitions as runtime data; transactional deltas with provenance; and a canonical,
 token-lean text format. Each element has precedents — exchange-format naming, ONNX

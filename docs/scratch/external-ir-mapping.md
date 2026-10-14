@@ -1,4 +1,8 @@
-# Mapping external IRs into BridgeIR
+# Mapping external IRs into Brrr
+
+> **2026-10-14:** written for the v0 text format (`nN name = kind ...`, edge and
+> param nodes). The current language is [`syntax-v1.md`](syntax-v1.md); the
+> reasoning here still stands where v1 does not say otherwise.
 
 > **2026-10-13 supersede:** the `phi` row and the phi-based `dot` mapping below are
 > superseded — `phi` was removed. LLVM/clang output maps onto block arguments fed
@@ -12,10 +16,10 @@ The mapped files live in `src/examples/` and are round-trip tested.
 
 ## 0. The universal recipe
 
-Every IR maps into BridgeIR through the same small frame — this is the payoff of a
+Every IR maps into Brrr through the same small frame — this is the payoff of a
 ~6-concept core:
 
-| External concept | BridgeIR concept |
+| External concept | Brrr concept |
 |---|---|
 | SSA value / temporary / register | result **port** of a node (`nID.port`) |
 | operation / instruction / call | **node** (kind = namespaced name, e.g. `hivm.hir.mmadL1`) |
@@ -27,7 +31,7 @@ Every IR maps into BridgeIR through the same small frame — this is the payoff 
 | type | **type data** (`type=` attr now; first-class Type later) |
 | constants / attributes | attr values (data); bulk data goes to side tables |
 | debug / metadata | `loc=` attr (future); metadata as data |
-| SSA name, FX node name, ONNX name | **BridgeIR name** (editable; ids stay machine-stable) |
+| SSA name, FX node name, ONNX name | **Brrr name** (editable; ids stay machine-stable) |
 | external stable ids (ONNX, FX) | names + `origin=` attrs (provenance of import) |
 
 The four worked examples below are the acceptance test: if these map cleanly, the
@@ -110,7 +114,7 @@ func @mlp(n1) {
 
 Notes: FX is already name-keyed and straight-line — the mapping is nearly the
 identity. `target=` (callable identity) is data; Dynamo guards would live as scope
-attrs; graph breaks = several scopes. Lowering direction: FX → BridgeIR → schedule
+attrs; graph breaks = several scopes. Lowering direction: FX → Brrr → schedule
 selection (S1/S2) → Triton/LLVM emission.
 
 ## 3. C++ → LLVM IR — the control-flow case
@@ -185,10 +189,10 @@ schema package (extension cost = 0 core files, per our gate).
 
 1. **Now**: hand-mapped examples (`src/examples/`) — round-trip tested, proving the
    core can *hold* these IRs today.
-2. **Next**: `bridgeir import --from=mlir-text <file>` for the subset used in
+2. **Next**: `brrr import --from=mlir-text <file>` for the subset used in
    AscendNPU-IR tests (lex + map; fresh ids; names from SSA names; `origin=` attrs),
    and `--from=fx` (consume `torch.fx` JSON/graph dump) — adapters, never core.
-3. **Then**: `bridgeir emit --to=mlir-text` and validate by round-tripping through
+3. **Then**: `brrr emit --to=mlir-text` and validate by round-tripping through
    `bishengir-opt`/`mlir-opt` on real test files (diff-driven).
 4. Provenance: every imported node records `origin=`, so import → transform → emit
    keeps a traceable chain.

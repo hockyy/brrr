@@ -13,8 +13,8 @@
 
 #include "types/types.h"
 
-namespace bridgeir::types {
+namespace brrr::types {
 
 bool parseTypeTerm(const std::string& text, TypeRef* out, std::string* err);
 
-}  // namespace bridgeir::types
+}  // namespace brrr::types

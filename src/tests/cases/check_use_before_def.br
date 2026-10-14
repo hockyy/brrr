@@ -1,0 +1,6 @@
+# expect: is not visible here
+func @f(%x: index) -> index {
+  %b = add %a, 1
+  %a = add %x, 1
+  return %b
+}

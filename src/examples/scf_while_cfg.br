@@ -1,51 +1,27 @@
 # CFG lowering of MLIR's two-region scf.while:
 #
-#   %res = scf.while (%arg0 = %init) : (T) -> (T) {
-#     %cond = arith.cmpi slt, %arg0, %bound : T
-#     scf.condition(%cond) %arg0 : T
+#   %res = scf.while (%arg0 = %init) : (i64) -> (i64) {
+#     %cond = arith.cmpi slt, %arg0, %bound : i64
+#     scf.condition(%cond) %arg0 : i64
 #   } do {
-#     %next = arith.addi %arg0, %step : T
-#     scf.yield %next : T
+#   ^bb0(%v: i64):
+#     %next = arith.addi %v, %step : i64
+#     scf.yield %next : i64
 #   }
 #
-# The two regions become a three-block cycle. What makes it work:
-#   * `before` is the loop header; its block argument IS `%arg0` (the iter_arg),
-#     declared once in the header: `block (int64 n9)`.
-#   * `scf.condition(%cond) %arg0` becomes one `cbr` with two outgoing edges,
-#     both carrying arg0 -- true -> body, false -> exit.
-#   * `scf.yield %next` (in the 'after' region) is NOT a result yield: it is the
-#     BACK EDGE `br before(next)`. That single edge is the whole loop.
-#   * the while's result is whatever the false edge carried out (no phi needed).
-#
-# Same arity invariant as the structured `loop` kind: back-edge payload (next)
-# == before's declared arguments (n9) == forward-edge payloads (n9).
-#
-#   bridgeir print src/examples/scf_while_cfg.br
-#   bridgeir check src/examples/scf_while_cfg.br      -> errors: 0
-func @scf_while_cfg(n1) {
-  n2 = param idx=0 type="i64"
-  n3 = param idx=1 type="i64"
-  n4 = param idx=2 type="i64"
-
-  n5 entry = block {
-    n6 e_pre = edge before n2            # cf.br ^before(%n2)
-    n7 = br e_pre
-  }
-
-  n8 before = block (int64 n9) {      # the 'before' region
-    n10 cond = icmp n9 n3 pred="slt"
-    n11 e_after = edge after n9          # cond true  -> enter 'after'
-    n12 e_exit = edge exit n9            # cond false -> leave, yielding arg0
-    n13 = cbr cond n11 n12
-  }
-
-  n14 after = block (int64 n15) {    # the 'after' region
-    n16 next = arith.addi n15 n4
-    n17 e_back = edge before next          # scf.yield %next  ==  back edge
-    n18 = br e_back
-  }
-
-  n19 exit = block (int64 n20) {
-    n21 = func.return n20                  # the while's result
-  }
+# The two regions become a three-block cycle:
+#   * ^before is the loop header; its argument %arg0 IS the iter_arg.
+#   * scf.condition(%cond) %arg0 is one cond_br whose two successors both carry %arg0.
+#   * scf.yield %next is not a result: it is the back edge `br ^before(%next)`.
+#   * the while's result is whatever the false successor carried out.
+func @scf_while_cfg(%init: i64, %bound: i64, %step: i64) -> i64 {
+  br ^before(%init)
+^before(%arg0: i64):
+  %cond = icmp %arg0, %bound pred=lt
+  cond_br %cond, ^after(%arg0), ^exit(%arg0)
+^after(%v: i64):
+  %next = add %v, %step
+  br ^before(%next)
+^exit(%r: i64):
+  return %r
 }

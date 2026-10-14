@@ -1,0 +1,3 @@
+# expect: contradicts
+fact n = 1
+fact n = 2

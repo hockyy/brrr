@@ -1,0 +1,5 @@
+# A pipeline is one pass per line, with optional key=value options.
+# `brrr passes` lists what exists. Edit freely.
+infer-shapes
+fold-reshape
+dce

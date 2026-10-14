@@ -1,0 +1,7 @@
+# expect: fact %m <= 50 is false
+func @f(%n: index) -> index {
+  fact range(%n, 100, 200)
+  %m = add %n, 1
+  fact %m <= 50
+  return %m
+}

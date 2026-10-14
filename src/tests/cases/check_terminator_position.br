@@ -1,0 +1,5 @@
+# expect: a terminator must be the last op
+func @f(%x: index) -> index {
+  return %x
+  %y = add %x, 1
+}

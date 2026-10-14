@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <sstream>
 
-namespace bridgeir::schema {
+namespace brrr::schema {
 namespace {
 
 std::string trim(const std::string& s) {
@@ -13,22 +13,22 @@ std::string trim(const std::string& s) {
   return s.substr(b, e - b + 1);
 }
 
-// Schema lists are separated by commas and/or whitespace — both styles appear
-// in practice (`operands: lhs, rhs` and `attrs: dtype:dtype shape:dims`).
-std::vector<std::string> splitComma(const std::string& s) {
+// Commas separate list items; parentheses group (`enum(a|b)`).
+std::vector<std::string> splitList(const std::string& s) {
   std::vector<std::string> out;
   std::string cur;
+  int depth = 0;
   for (const char c : s) {
-    if (c == ',' || c == ' ' || c == '\t') {
-      if (!cur.empty()) {
-        out.push_back(cur);
-        cur.clear();
-      }
+    if (c == '(') ++depth;
+    if (c == ')') --depth;
+    if (c == ',' && depth == 0) {
+      if (!trim(cur).empty()) out.push_back(trim(cur));
+      cur.clear();
     } else {
       cur += c;
     }
   }
-  if (!cur.empty()) out.push_back(cur);
+  if (!trim(cur).empty()) out.push_back(trim(cur));
   return out;
 }
 
@@ -43,7 +43,24 @@ bool parseStrictInt(const std::string& s, int64_t* out) {
   return true;
 }
 
+bool validAttrType(const std::string& t) {
+  static const char* const kTypes[] = {"int", "float", "bool", "str",
+                                       "type", "array", "any"};
+  for (const char* k : kTypes) {
+    if (t == k) return true;
+  }
+  return t.rfind("enum(", 0) == 0 && t.back() == ')' && t.size() > 6;
+}
+
 }  // namespace
+
+bool Kind::hasTrait(const std::string& t) const {
+  return std::find(traits.begin(), traits.end(), t) != traits.end();
+}
+
+bool isStructural(const std::string& kind) {
+  return kind == "module" || kind == "func" || kind == "block" || kind == "arg";
+}
 
 const Kind* Registry::find(const std::string& name) const {
   auto it = kinds_.find(name);
@@ -69,6 +86,10 @@ bool Registry::add(Kind k, std::string* err) {
     *err = "duplicate kind '" + k.name + "'";
     return false;
   }
+  if (isStructural(k.name)) {
+    *err = "'" + k.name + "' is part of the language, not a kind";
+    return false;
+  }
   if (!k.parent.empty()) {
     auto it = kinds_.find(k.parent);
     if (it == kinds_.end()) {
@@ -76,30 +97,37 @@ bool Registry::add(Kind k, std::string* err) {
       return false;
     }
     const Kind& base = it->second;
-    Kind out = k;
-    if (!out.operands_specified) {
-      out.operands_specified = base.operands_specified;
-      out.operands_none = base.operands_none;
-      out.operands_variadic = base.operands_variadic;
-      out.operands = base.operands;
+    if (!k.operands_specified) {
+      k.operands_specified = base.operands_specified;
+      k.operands = base.operands;
+      k.operands_variadic = base.operands_variadic;
     }
-    if (!out.results_specified) {
-      out.results_value = base.results_value;
-      out.results_specified = true;
+    if (!k.successors_specified) {
+      k.successors_specified = base.successors_specified;
+      k.successors = base.successors;
     }
-    if (!out.attrs_specified) {
-      out.attr_policy = base.attr_policy;
-      out.attrs = base.attrs;
-      out.attrs_specified = base.attrs_specified;
+    if (!k.results_specified) {
+      k.results_specified = base.results_specified;
+      k.results = base.results;
+      k.results_variadic = base.results_variadic;
     }
-    out.traits = base.traits;
+    if (!k.attrs_specified) {
+      k.attrs_specified = base.attrs_specified;
+      k.attr_policy = base.attr_policy;
+      k.attrs = base.attrs;
+    }
+    if (!k.regions_specified) {
+      k.regions_specified = base.regions_specified;
+      k.regions = base.regions;
+    }
+    if (k.result_type.empty()) k.result_type = base.result_type;
+    if (k.expr.empty()) k.expr = base.expr;
+    if (k.shape.empty()) k.shape = base.shape;
+    std::vector<std::string> traits = base.traits;
     for (const std::string& t : k.traits) {
-      if (std::find(out.traits.begin(), out.traits.end(), t) == out.traits.end()) {
-        out.traits.push_back(t);
-      }
+      if (std::find(traits.begin(), traits.end(), t) == traits.end()) traits.push_back(t);
     }
-    kinds_[out.name] = std::move(out);
-    return true;
+    k.traits = std::move(traits);
   }
   kinds_[k.name] = std::move(k);
   return true;
@@ -125,42 +153,42 @@ bool parseSchema(const std::string& text, Registry* reg, std::string* err) {
       *err = "line " + std::to_string(lineno) + ": " + msg;
       return false;
     };
+    auto close = [&]() {
+      const bool ok = state == State::Kind ? reg->add(std::move(cur), err)
+                                           : reg->addScalar(std::move(cur_scalar), err);
+      state = State::None;
+      return ok;
+    };
 
     if (state == State::None) {
-      if (line.rfind("kind ", 0) == 0 && line.back() == '{') {
-        const std::string inner = trim(line.substr(5, line.size() - 6));
-        std::string name = inner;
-        std::string parent;
-        const size_t lt = inner.find('<');
-        if (lt != std::string::npos) {
-          name = trim(inner.substr(0, lt));
-          parent = trim(inner.substr(lt + 1));
-        }
-        if (name.empty()) return fail("empty kind name");
+      const bool empty_body = line.size() >= 2 && line.substr(line.size() - 2) == "{}";
+      if (line.back() != '{' && !empty_body) {
+        return fail("expected 'kind NAME {' or 'scalar NAME {'");
+      }
+      const std::string head =
+          trim(line.substr(0, line.size() - (empty_body ? 2 : 1)));
+      if (head.rfind("kind ", 0) == 0) {
+        const std::string inner = trim(head.substr(5));
         cur = Kind{};
-        cur.name = name;
-        cur.parent = parent;
+        const size_t lt = inner.find('<');
+        cur.name = trim(inner.substr(0, lt));
+        if (lt != std::string::npos) cur.parent = trim(inner.substr(lt + 1));
+        if (cur.name.empty()) return fail("empty kind name");
         state = State::Kind;
-        continue;
-      }
-      if (line.rfind("scalar ", 0) == 0 && line.back() == '{') {
-        const std::string name = trim(line.substr(7, line.size() - 8));
-        if (name.empty()) return fail("empty scalar name");
+      } else if (head.rfind("scalar ", 0) == 0) {
         cur_scalar = Scalar{};
-        cur_scalar.name = name;
+        cur_scalar.name = trim(head.substr(7));
+        if (cur_scalar.name.empty()) return fail("empty scalar name");
         state = State::Scalar;
-        continue;
+      } else {
+        return fail("expected 'kind NAME {' or 'scalar NAME {'");
       }
-      return fail("expected 'kind NAME {' or 'scalar NAME {'");
+      if (empty_body && !close()) return fail(*err);
+      continue;
     }
 
     if (line == "}") {
-      if (state == State::Kind) {
-        if (!reg->add(std::move(cur), err)) return fail(*err);
-      } else {
-        if (!reg->addScalar(std::move(cur_scalar), err)) return fail(*err);
-      }
-      state = State::None;
+      if (!close()) return fail(*err);
       continue;
     }
 
@@ -171,9 +199,10 @@ bool parseSchema(const std::string& text, Registry* reg, std::string* err) {
 
     if (state == State::Scalar) {
       if (key == "domain") {
-        if (value != "int" && value != "uint" && value != "float" &&
-            value != "bool" && value != "index") {
-          return fail("domain must be int|uint|float|bool|index");
+        static const char* const kDomains[] = {"int", "uint", "float", "bool", "index", "ptr"};
+        if (std::none_of(std::begin(kDomains), std::end(kDomains),
+                         [&](const char* d) { return value == d; })) {
+          return fail("domain must be int|uint|float|bool|index|ptr");
         }
         cur_scalar.domain = value;
       } else if (key == "bits") {
@@ -189,90 +218,42 @@ bool parseSchema(const std::string& text, Registry* reg, std::string* err) {
     }
 
     if (key == "operands") {
-      if (value.empty()) return fail("empty operands spec");
       cur.operands_specified = true;
-      if (value == "none") {
-        cur.operands_none = true;
-      } else {
-        // Slots: commas separate slots; a slot may be `name: type` (spaces around
-        // ':' allowed), or bare tokens (names or types) split on whitespace.
-        auto toSlots = [&](const std::string& spec,
-                           std::vector<std::string>* names,
-                           std::vector<std::string>* types) {
-          std::vector<std::string> pieces;
-          std::string curp;
-          for (const char ch : spec) {
-            if (ch == ',') {
-              pieces.push_back(trim(curp));
-              curp.clear();
-            } else {
-              curp += ch;
-            }
-          }
-          pieces.push_back(trim(curp));
-          for (const std::string& piece : pieces) {
-            if (piece.empty()) continue;
-            const size_t c2 = piece.find(':');
-            if (c2 != std::string::npos) {
-              names->push_back(trim(piece.substr(0, c2)));
-              types->push_back(trim(piece.substr(c2 + 1)));
-              continue;
-            }
-            std::string w;
-            for (size_t i = 0; i <= piece.size(); ++i) {
-              if (i == piece.size() || piece[i] == ' ' || piece[i] == '\t') {
-                if (!w.empty()) {
-                  std::string name = w;
-                  std::string type;
-                  if (w == "value" || w == "block" || w == "edge" ||
-                      w == "any") {
-                    type = w;
-                    name.clear();
-                  }
-                  names->push_back(name);
-                  types->push_back(type);
-                  w.clear();
-                }
-              } else {
-                w += piece[i];
-              }
-            }
-          }
-        };
-
-        if (value.front() == '(') {
-          // Port group: (slot, slot, ...)* — operands repeat as tuples.
-          if (value.back() != '*' || value.find(')') == std::string::npos) {
-            return fail("tuple operand spec must be ( ... )*");
-          }
-          const size_t rp = value.rfind(')');
-          toSlots(value.substr(1, rp - 1), &cur.operands, &cur.operand_types);
-          if (cur.operands.empty()) return fail("empty tuple operand spec");
-          cur.operand_tuple_width = cur.operands.size();
-        } else {
-          std::string spec = value;
-          if (!spec.empty() && spec.back() == '*') {
+      if (value != "none") {
+        for (std::string slot : splitList(value)) {
+          if (slot.back() == '*') {
             cur.operands_variadic = true;
-            spec.pop_back();
+            slot = trim(slot.substr(0, slot.size() - 1));
           }
-          toSlots(spec, &cur.operands, &cur.operand_types);
-        }
-        for (const std::string& type : cur.operand_types) {
-          if (!type.empty() && type != "value" && type != "block" &&
-              type != "edge" && type != "any") {
-            return fail("unknown port type '" + type + "'");
-          }
+          if (slot.empty()) return fail("empty operand name");
+          cur.operands.push_back(slot);
         }
         if (cur.operands.empty()) return fail("empty operands spec");
       }
+    } else if (key == "successors") {
+      cur.successors_specified = true;
+      int64_t n = 0;
+      if (value == "*") {
+        cur.successors = -1;
+      } else if (parseStrictInt(value, &n) && n >= 0) {
+        cur.successors = static_cast<int>(n);
+      } else {
+        return fail("successors must be a count or '*'");
+      }
     } else if (key == "results") {
       cur.results_specified = true;
+      int64_t n = 0;
       if (value == "none") {
-        cur.results_value = false;
+        cur.results = 0;
       } else if (value == "value") {
-        cur.results_value = true;
+        cur.results = 1;
+      } else if (value == "value*") {
+        cur.results = 0;
+        cur.results_variadic = true;
+      } else if (parseStrictInt(value, &n) && n >= 0) {
+        cur.results = static_cast<int>(n);
       } else {
-        return fail("results must be 'value' or 'none'");
+        return fail("results must be none | value | value* | a count");
       }
     } else if (key == "attrs") {
       cur.attrs_specified = true;
@@ -282,23 +263,41 @@ bool parseSchema(const std::string& text, Registry* reg, std::string* err) {
         cur.attr_policy = Kind::AttrPolicy::None;
       } else {
         cur.attr_policy = Kind::AttrPolicy::Closed;
-        for (const std::string& part : splitComma(value)) {
+        for (const std::string& part : splitList(value)) {
           const size_t c2 = part.find(':');
-          if (c2 == std::string::npos) {
-            return fail("attribute '" + part + "' needs a type (name:type)");
-          }
-          const std::string an = trim(part.substr(0, c2));
+          if (c2 == std::string::npos) return fail("attribute '" + part + "' needs a type (name: type)");
+          std::string an = trim(part.substr(0, c2));
           const std::string at = trim(part.substr(c2 + 1));
-          if (an.empty() || at.empty()) return fail("malformed attribute spec");
-          cur.attrs[an] = at;
+          Kind::Attr a;
+          if (!an.empty() && an.back() == '?') {
+            a.optional = true;
+            an = trim(an.substr(0, an.size() - 1));
+          }
+          if (an.empty() || !validAttrType(at)) {
+            return fail("malformed attribute '" + part +
+                        "' (types: int, float, bool, str, type, array, any, enum(a|b))");
+          }
+          a.type = at;
+          cur.attrs[an] = a;
         }
       }
+    } else if (key == "regions") {
+      int64_t n = 0;
+      if (!parseStrictInt(value, &n) || n < 0) return fail("regions must be a count");
+      cur.regions_specified = true;
+      cur.regions = static_cast<int>(n);
+    } else if (key == "type") {
+      if (value.empty()) return fail("empty type");
+      cur.result_type = value;
+    } else if (key == "expr") {
+      if (value.empty()) return fail("empty expr");
+      cur.expr = value;
+    } else if (key == "shape") {
+      if (value.find("->") == std::string::npos) return fail("shape rule needs '->'");
+      cur.shape = value;
     } else if (key == "traits") {
-      if (value.empty()) return fail("empty traits spec");
-      for (const std::string& t : splitComma(value)) {
-        if (t.empty()) return fail("empty trait name");
-        cur.traits.push_back(t);
-      }
+      for (const std::string& t : splitList(value)) cur.traits.push_back(t);
+      if (cur.traits.empty()) return fail("empty traits spec");
     } else {
       return fail("unknown field '" + key + "'");
     }
@@ -311,21 +310,59 @@ bool parseSchema(const std::string& text, Registry* reg, std::string* err) {
   return true;
 }
 
+std::string printKind(const Kind& k) {
+  std::string out = "kind " + k.name + (k.parent.empty() ? "" : " < " + k.parent) + " {\n";
+  if (k.operands_specified) {
+    std::string ops;
+    for (size_t i = 0; i < k.operands.size(); ++i) {
+      if (i) ops += ", ";
+      ops += k.operands[i];
+    }
+    if (k.operands_variadic) ops += "*";
+    out += "  operands: " + (ops.empty() ? std::string("none") : ops) + "\n";
+  }
+  if (k.successors != 0) {
+    out += "  successors: " + (k.successors < 0 ? std::string("*") : std::to_string(k.successors)) + "\n";
+  }
+  if (k.results_variadic) {
+    out += "  results: value*\n";
+  } else if (k.results != 1) {
+    out += "  results: " + (k.results == 0 ? std::string("none") : std::to_string(k.results)) + "\n";
+  }
+  if (k.attr_policy == Kind::AttrPolicy::None) {
+    out += "  attrs: none\n";
+  } else if (k.attr_policy == Kind::AttrPolicy::Closed) {
+    std::string s;
+    for (const auto& [an, a] : k.attrs) {
+      if (!s.empty()) s += ", ";
+      s += an + (a.optional ? "?" : "") + ": " + a.type;
+    }
+    out += "  attrs: " + s + "\n";
+  }
+  if (k.regions) out += "  regions: " + std::to_string(k.regions) + "\n";
+  if (!k.result_type.empty()) out += "  type: " + k.result_type + "\n";
+  if (!k.expr.empty()) out += "  expr: " + k.expr + "\n";
+  if (!k.shape.empty()) out += "  shape: " + k.shape + "\n";
+  if (!k.traits.empty()) {
+    std::string s;
+    for (const std::string& t : k.traits) s += (s.empty() ? "" : ", ") + t;
+    out += "  traits: " + s + "\n";
+  }
+  return out + "}\n";
+}
+
 // ---------------------------------------------------------------------------
-// The standard vocabulary ships as modules: `core` (skeleton + primitives),
-// `std` (common ops), `control` (branches and loops). Everything above the
-// language skeleton is a module.
+// The standard vocabulary. Everything above the language skeleton is a module.
 // ---------------------------------------------------------------------------
 
 std::string coreSchemaText() {
-  return R"SCHEMA(# core module: the language skeleton + primitive types.
-# Kinds: operands are positional and named; `none` | `a, b` | `tail*` (variadic).
-# `results: none` marks terminators that may not be referenced as operands.
-# Attr types: int, float, str, sym, dtype (declared scalar), expr, dims.
-# `kind X < Parent` inherits unspecified fields; `traits` are interfaces.
-
+  return R"SCHEMA(# core module: primitive scalars and the function terminator.
 scalar bool {
   domain: bool
+  bits: 1
+}
+scalar i1 {
+  domain: int
   bits: 1
 }
 scalar i8 {
@@ -342,6 +379,22 @@ scalar i32 {
 }
 scalar i64 {
   domain: int
+  bits: 64
+}
+scalar u8 {
+  domain: uint
+  bits: 8
+}
+scalar u16 {
+  domain: uint
+  bits: 16
+}
+scalar u32 {
+  domain: uint
+  bits: 32
+}
+scalar u64 {
+  domain: uint
   bits: 64
 }
 scalar f16 {
@@ -364,130 +417,163 @@ scalar index {
   domain: index
   bits: 64
 }
-
-kind module {
-  operands: none
-  results: none
-  attrs: sym:sym
+scalar ptr {
+  domain: ptr
+  bits: 64
 }
 
-kind func {
-  operands: none
+kind return {
+  operands: values*
   results: none
-  attrs: sym:sym
+  traits: terminator
 }
 
-kind param {
-  operands: none
-  results: value
-  traits: arg
-}
-
-kind func.return {
-  operands: value*
-  results: none
+# A placeholder conversion between type systems, like MLIR's
+# builtin.unrealized_conversion_cast: allowed while an import or a lowering is in
+# progress, opaque to the solver, and gone by the end (`reconcile-casts` folds
+# round trips; every one left is a warning, an error under `check --strict`).
+kind unrealized_cast {
+  operands: inputs*
+  results: value*
+  traits: pure, unrealized
 }
 )SCHEMA";
 }
 
 std::string stdSchemaText() {
-  return R"SCHEMA(# std module: common operation vocabulary.
-kind unary {
-  operands: x: value
-  results: value
+  return R"SCHEMA(# std module: arithmetic and tensors.
+# `expr:` is what the result means to the solver; `shape:` relates operand shapes.
+
+kind const {
+  operands: none
+  attrs: value: any
+  expr: @value
   traits: pure
 }
 
-kind load {
-  operands: none
-  results: value
-  attrs: dtype:dtype shape:dims
+# Integer meanings need "cannot wrap": always for index, and for iN/uN only when
+# the op says so (nsw = no signed wrap, nuw = no unsigned wrap).
+kind binary {
+  operands: lhs, rhs
+  attrs: nsw?: bool, nuw?: bool
+  shape: S, S -> S
+  traits: pure
+}
+kind add < binary {
+  expr: lhs + rhs
+}
+kind sub < binary {
+  expr: lhs - rhs
+}
+kind mul < binary {
+  expr: lhs * rhs
+}
+
+# An integer expression, as a value: `%m = apply %base * 2 floordiv 3`. The
+# analog of MLIR's affine.apply, without a map: the operand is the formula.
+kind apply {
+  operands: formula
+  type: index
+  expr: formula
+  traits: pure
+}
+
+kind icmp {
+  operands: lhs, rhs
+  attrs: pred: enum(eq|ne|lt|le|gt|ge)
+  type: i1
+  traits: pure
+}
+
+kind select {
+  operands: cond, if_true, if_false
+  traits: pure
+}
+
+kind dim {
+  operands: source
+  attrs: index: int
+  type: index
+  expr: dim(source, @index)
+  traits: pure
+}
+
+kind unary {
+  operands: x
+  shape: S -> S
+  traits: pure
+}
+kind relu < unary {
+}
+# One conversion op: the source and target types decide sign- or zero-extension,
+# truncation, or index conversion (on export: arith.extsi / extui / trunci /
+# index_cast). It means its operand exactly when every source value fits the
+# target type (a widening); otherwise it may wrap, and is opaque to the solver.
+kind cast < unary {
+  attrs: to: type
+  expr: x
+  traits: conversion
 }
 
 kind reshape {
-  operands: source: value
-  results: value
-  attrs: in:dims out:dims
+  operands: source
+  traits: pure, same_numel
+}
+
+kind matmul {
+  operands: lhs, rhs
+  shape: [M, K], [K, N] -> [M, N]
   traits: pure
 }
 
-kind add {
-  operands: lhs: value, rhs: value
-  results: value
+kind nonzero {
+  operands: x
+  shape: [N] -> [?] : index
   traits: pure
 }
 
-kind relu < unary {
+# A runtime check: execution stops unless lhs == rhs (rel=eq) or lhs <= rhs
+# (rel=le). Below a guard its relation is a fact. `insert-guards` writes these
+# for equations the solver could not prove.
+kind guard {
+  operands: lhs, rhs
+  results: none
+  attrs: rel: enum(eq|le), what?: str
 }
 )SCHEMA";
 }
 
 std::string controlSchemaText() {
   return R"SCHEMA(# control module: branches and loops.
-# CFG form: blocks are scopes; `edge` carries branch payloads.
-# Simple form: `loop` is a scope whose `param`s are the carried values and whose
-# single `loop.yield` supplies (condition, next carried values); the `loop.N`
-# result ports are the exit values, in parameter order.
-
-kind block {
-  operands: none
-  results: value
-  traits: block
-}
-
-kind edge {
-  operands: target: block, passed: value*
-  results: value
-  traits: edge
-}
+# A successor carries the values for its block's arguments. A `loop` has one
+# region whose entry arguments are the carried values; `continue_if` ends the
+# region with (condition, next values) and the loop's results are the final values.
 
 kind br {
-  operands: target: any
+  operands: none
+  successors: 1
   results: none
   traits: terminator
 }
 
-kind cbr {
-  operands: cond: value, if_true: value, if_false: value
+kind cond_br {
+  operands: cond
+  successors: 2
   results: none
   traits: terminator
-}
-
-kind select {
-  operands: cond: value, if_true: value, if_false: value
-  results: value
-}
-
-kind yield {
-  operands: value*
-  results: none
 }
 
 kind loop {
-  operands: init: value*
-  results: value
+  operands: init*
+  results: value*
+  regions: 1
   traits: loop
 }
 
-kind loop.yield {
-  operands: cond: value, next: value*
+kind continue_if {
+  operands: cond, next*
   results: none
-  traits: loop.yield
-}
-
-kind icmp {
-  operands: lhs: value, rhs: value
-  results: value
-}
-
-kind arith.constant {
-  operands: none
-  results: value
-}
-
-kind arith.addi {
-  operands: lhs: value, rhs: value
-  results: value
+  traits: terminator, loop.continue
 }
 )SCHEMA";
 }
@@ -501,9 +587,4 @@ Registry buildRegistry(bool std_kinds, bool control_kinds) {
   return r;
 }
 
-const Registry& coreRegistry() {
-  static const Registry reg = buildRegistry(true, true);
-  return reg;
-}
-
-}  // namespace bridgeir::schema
+}  // namespace brrr::schema

@@ -1,0 +1,5 @@
+# expect: expects one of eq|ne|lt|le|gt|ge
+func @f(%a: index, %b: index) {
+  %c = icmp %a, %b pred=gtt
+  return
+}

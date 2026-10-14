@@ -1,0 +1,7 @@
+# expect: cannot prove dim(%a, 0) == dim(%b, 0)
+func @f(%n: index, %x: tensor<[%n], f32>, %y: tensor<[%n], f32>) {
+  %a = nonzero %x
+  %b = nonzero %y
+  %s = add %a, %b
+  return
+}

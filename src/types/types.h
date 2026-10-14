@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace bridgeir::types {
+namespace brrr::types {
 
 struct TypeTerm;
 using TypeRef = std::shared_ptr<const TypeTerm>;
@@ -52,4 +52,4 @@ class Unifier {
   uint32_t next_var_ = 0;
 };
 
-}  // namespace bridgeir::types
+}  // namespace brrr::types

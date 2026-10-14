@@ -1,5 +1,9 @@
 # Scoping rules (implemented)
 
+> **2026-10-14:** written for the v0 text format (`nN name = kind ...`, edge and
+> param nodes). The current language is [`syntax-v1.md`](syntax-v1.md); the
+> reasoning here still stands where v1 does not say otherwise.
+
 > **2026-10-13 supersede:** the phi crossing below is gone — `phi` was removed, so
 > the sanctioned roads are `terminator -> block/edge` and `edge -> its target`.
 > See `design-notes.md`.

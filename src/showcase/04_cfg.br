@@ -1,0 +1,27 @@
+# 04 — Control flow. Blocks take arguments; a branch passes the values its
+# target needs, at the branch site. There is no phi and no edge node.
+#
+# The invariant on ^body is checked on every edge into it, with the branch
+# condition as a fact on that edge:
+#   from the entry (true edge of %has: %n > 0)    0 <= %n <= %n
+#   from ^body     (true edge of %more: %i2 > 0)  0 <= %i - 1 <= %n
+#
+#   brrr check src/showcase/04_cfg.br                         -> 0 warnings
+#   brrr ask   src/showcase/04_cfg.br ^body "%i2 + 1 == %i"   -> Yes
+#
+# Try: change `pred=gt` on %more to `pred=ne` — the condition no longer bounds
+# %i2 from below, and `check` points at the back edge it cannot prove.
+# (`pred=ge` still proves: %i2 >= 0 is enough; only ^exit ever sees -1.)
+func @sum_to_n(%n: index) -> index {
+  %zero = const 0 : index
+  %has = icmp %n, %zero pred=gt
+  cond_br %has, ^body(%zero, %n), ^exit(%zero)
+^body(%acc: index, %i: index):
+  fact 0 <= %i <= %n
+  %i2 = sub %i, 1
+  %acc2 = add %acc, %i
+  %more = icmp %i2, %zero pred=gt
+  cond_br %more, ^body(%acc2, %i2), ^exit(%acc2)
+^exit(%r: index):
+  return %r
+}

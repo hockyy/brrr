@@ -1,13 +1,14 @@
-# 01 — Identity. Ids are forever; names are for humans; renames are journaled.
+# 01 — Identity. Every definition has a stable id; names are for reading.
 #
-#   bridgeir print    src/showcase/01_identity.br
-#   bridgeir rename   src/showcase/01_identity.br sum total
-#   bridgeir to-json  src/showcase/01_identity.br
-fact tile = 128
-
-func @scale(n1) {
-  n2 x = load dtype=@f16 shape="tile"
-  n3 y = load dtype=@f16 shape="tile"
-  n4 sum = add x y
-  n5 = func.return sum
+#   brrr print  src/showcase/01_identity.br           # clean form (default)
+#   brrr print  src/showcase/01_identity.br --ids     # stored form: ids shown
+#   brrr rename src/showcase/01_identity.br %sum %total
+#
+# An unnamed value prints as its id (%5 below), so even the clean form keeps
+# identity. Ids are not positions: %5 is the first id the text fixes, and the
+# rest are allocated above it.
+func @scale(%x: tensor<[128], f16>, %y: tensor<[128], f16>) -> tensor<[128], f16> {
+  %sum = add %x, %y
+  %5 = relu %sum
+  return %5
 }

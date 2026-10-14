@@ -1,0 +1,30 @@
+# 06 — Symbolic shapes. A dimension is an expression over values (%n) and
+# module symbols. Shape rules come from the schema (`matmul: [M, K], [K, N] ->
+# [M, N]`), and every equation they imply goes to the solver:
+#   Yes      accepted
+#   No       an error that shows the equation
+#   Unknown  a warning naming it — add a fact, or `insert-guards`
+#
+#   brrr types src/showcase/06_shapes.br        # every value's type and meaning
+#   brrr check src/showcase/06_shapes.br
+#
+# Try: in @scores, change %k's first dim to `%d + 1` — the matmul's K is then
+# provably wrong (`%d == %d + 1 is false`). Change it to a new argument %e
+# instead, and K becomes an honest Unknown: a warning, not an error.
+func @scores(%b: index, %s: index, %d: index,
+             %q: tensor<[%b * %s, %d], f16>, %k: tensor<[%d, %s * %b], f16>)
+    -> tensor<[%b * %s, %s * %b], f16> {
+  %scores = matmul %q, %k                                   # inferred [%b * %s, %s * %b]
+  %flat = reshape %scores : tensor<[%s * %s * %b * %b], f16>  # element count: products commute
+  %back = reshape %flat : tensor<[%b * %s, %b * %s], f16>
+  return %back
+}
+
+# A data-dependent size is a fresh dimension with identity: `?` in a type, and
+# dim(%idx, 0) in expressions. Two nonzero results have different sizes, so
+# adding them would need a guard (try it, then `run ... --passes=insert-guards`).
+func @count(%n: index, %x: tensor<[%n], f32>) -> index {
+  %idx = nonzero %x                     # tensor<[?], index>
+  %c = dim %idx index=0                 # %c means dim(%idx, 0)
+  return %c
+}

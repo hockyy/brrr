@@ -7,7 +7,7 @@
 
 #include "types/types.h"
 
-namespace bridgeir::types {
+namespace brrr::types {
 
 // A typing rule for a kind. Variables 0..type_params-1 are fresh per instantiation
 // (e.g. mm : tensor<A,M,K> x tensor<A,K,N> -> tensor<f32,M,N> has 4).
@@ -20,7 +20,7 @@ struct Signature {
 
 // A node in the inference graph; operands index earlier nodes (topological order).
 struct InferNode {
-  size_t id = 0;                 // display id (e.g. bridgeir node id)
+  size_t id = 0;                 // display id (e.g. brrr node id)
   std::string kind;
   std::vector<size_t> operands;  // indices into the node list
   TypeRef given;                 // optional declared type (from attrs); may be null
@@ -36,4 +36,4 @@ struct InferResult {
 InferResult infer(const std::vector<InferNode>& nodes,
                   const std::vector<Signature>& signatures);
 
-}  // namespace bridgeir::types
+}  // namespace brrr::types

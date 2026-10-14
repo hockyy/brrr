@@ -1,5 +1,9 @@
 # The symbolic layer: value reasoning as a core service
 
+> **2026-10-14:** written for the v0 text format (`nN name = kind ...`, edge and
+> param nodes). The current language is [`syntax-v1.md`](syntax-v1.md); the
+> reasoning here still stands where v1 does not say otherwise.
+
 Status: design + prototype step 1, 2026-10-13. Prototype: `src/symbolic/`,
 test `ctest -R symbolic`. Refines `symbols-and-types.md` (which covered name
 bindings and type unification).
@@ -64,7 +68,7 @@ for reasoning, it usually has to be reified, passed around, and re-derived.
 not first-class, which matches the user's intuition that this is heavy engineering
 in the tensor-type layer.)
 
-In BridgeIR the same facts are **data**: expressions live in types/attrs, facts are
+In Brrr the same facts are **data**: expressions live in types/attrs, facts are
 asserted by schema rules, and queries are one solver call. No SSA threading, no
 per-pass re-derivation.
 
@@ -143,7 +147,7 @@ Symbols and facts are **part of the IR document**, not library calls:
   `fact range(i, 0, 1023)`; expressions support `+`, `*`, parentheses, symbols.
 - Facts are consistency-checked as they are applied — a fact contradicting the
   store is a hard error (`fact N = 12` + `fact aligned(N, 16)` → rejected).
-- `bridgeir facts <file>` validates and prints the store; `bridgeir fold-reshape
+- `brrr facts <file>` validates and prints the store; `brrr fold-reshape
   <file>` runs the FoldReshape-style decision straight from the document: one
   `isEqual` + one `aligned` query per reshape pair (`Yes → compose` with a fused
   node and journaled retargets; `No → keep`; `Unknown → skip`).

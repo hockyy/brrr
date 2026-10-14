@@ -10,7 +10,7 @@
 #include "ir/ir.h"
 #include "schema/schema.h"
 
-namespace bridgeir::verify {
+namespace brrr::verify {
 
 struct Issue {
   bool error = true;
@@ -23,4 +23,4 @@ std::vector<Issue> checkModule(const Module& m, const schema::Registry& reg);
 
 bool hasErrors(const std::vector<Issue>& issues);
 
-}  // namespace bridgeir::verify
+}  // namespace brrr::verify

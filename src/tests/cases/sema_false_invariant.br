@@ -1,0 +1,8 @@
+# expect: invariant 1 <= %i of ^body from entry: 1 <= %zero is false
+func @f() -> index {
+  %zero = const 0 : index
+  br ^body(%zero)
+^body(%i: index):
+  fact %i >= 1
+  return %i
+}

@@ -1,0 +1,4 @@
+# expect: returns 2 value(s); @f declares 1
+func @f(%x: index) -> index {
+  return %x, %x
+}

@@ -2,7 +2,7 @@
 
 #include <cctype>
 
-namespace bridgeir::types {
+namespace brrr::types {
 namespace {
 
 class Parser {
@@ -103,4 +103,4 @@ bool parseTypeTerm(const std::string& text, TypeRef* out, std::string* err) {
   return p.parse(out, err);
 }
 
-}  // namespace bridgeir::types
+}  // namespace brrr::types

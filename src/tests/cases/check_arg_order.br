@@ -1,0 +1,4 @@
+# expect: type dimension %n is not visible here
+func @f(%x: tensor<[%n], f32>, %n: index) {
+  return
+}

@@ -1,0 +1,5 @@
+# expect: only allowed in a type
+func @f(%x: index) {
+  fact ? <= %x
+  return
+}

@@ -29,3 +29,9 @@ compile_commands.json
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# brrr run store (runs, stage records, states)
+.brrr/
+
+# third-party downloads (Z3: see docs/scratch/solver.md)
+third_party/

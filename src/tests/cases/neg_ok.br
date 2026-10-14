@@ -1,7 +1,4 @@
-# Exercises --schemas: `neg` is declared by tests/schemas/extra.bs, inheriting
-# operands/results/traits from the core kind `unary`.
-func @negate(n1) {
-  n2 x = param
-  n3 y = neg n2
-  n4 = func.return y
+func @f(%x: tensor<[8], f32>) -> tensor<[8], f32> {
+  %y = neg %x
+  return %y
 }

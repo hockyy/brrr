@@ -1,0 +1,13 @@
+# 08 — Compiling: a recorded, branchable run. See 08_pipeline.txt and the
+# walkthrough in README.md.
+#
+#   brrr run    src/showcase/08_pipeline.br --pipeline=src/showcase/08_pipeline.txt
+#   brrr show   r1@2                   # the state after stage 2
+#   brrr branch r1@1 --passes=dce      # try something else from stage 1
+#   brrr runs
+func @roundtrip(%n: index, %m: index, %x: tensor<[%n, %m], f32>) -> tensor<[%n, %m], f32> {
+  %flat = reshape %x : tensor<[%n * %m], f32>
+  %back = reshape %flat : tensor<[%n, %m], f32>   # fold-reshape: composes, then drops it
+  %y = relu %back
+  return %y
+}

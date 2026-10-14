@@ -1,0 +1,25 @@
+# 05 — Structured loops. A `loop` has one region; its entry block's arguments
+# are the carried values. `continue_if` ends the region with (condition, next
+# values), and the loop's results are the final values.
+#
+# A fact on the entry block is a loop invariant, proven by induction: it must
+# hold for the initial values and be preserved by the back edge.
+#
+#   brrr check src/showcase/05_loop.br
+#   brrr ask   src/showcase/05_loop.br ^iter "%i2 <= %n"   -> Yes
+#
+# Try: delete the precondition `fact %n >= 0` — the invariant then fails on
+# loop entry, and `check` says so.
+func @sum_to_n(%n: index) -> index {
+  fact %n >= 0
+  %zero = const 0 : index
+  %total, %last = loop %zero, %n {
+  ^iter(%acc: index, %i: index):
+    fact 0 <= %i <= %n
+    %i2 = sub %i, 1
+    %acc2 = add %acc, %i
+    %more = icmp %i2, %zero pred=gt
+    continue_if %more, %acc2, %i2
+  }
+  return %total
+}

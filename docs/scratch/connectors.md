@@ -79,7 +79,7 @@ Sage, Lean, or a custom decision procedure your team already trusts.
   pass the solver, invariants, or a reference evaluator before any commit. This is
   how "AI-assisted compiling" participates without touching core trust.
 
-## Why this is the right shape for BridgeIR
+## Why this is the right shape for Brrr
 
 "Super loose" is not an add-on: it falls out of data-first. Connectors are plugins
 with a manifest and a process boundary — the same extension model as passes and

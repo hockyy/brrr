@@ -1,0 +1,5 @@
+# expect: unbound symbol 'tlie'
+fact tile = 128
+func @f(%x: tensor<[tlie], f16>) {
+  return
+}

@@ -1,9 +1,13 @@
 #include "symbolic/symbolic.h"
 
-#include <algorithm>
-#include <cstdlib>
+#include "symbolic/z3_backend.h"
 
-namespace bridgeir::symbolic {
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <iterator>
+
+namespace brrr::symbolic {
 namespace {
 
 using I128 = __int128;
@@ -45,7 +49,32 @@ void dropZeroCoeffs(LinForm& f) {
   }
 }
 
+// Polynomial canonical form: monomial (sorted atom multiset) -> coefficient.
+// Complete for equality of polynomials; nullopt on overflow or blow-up.
+using Monomial = std::vector<std::string>;
+using Poly = std::map<Monomial, int64_t>;
+constexpr size_t kMaxPolyTerms = 256;
+
+void dropZeros(Poly& p) {
+  for (auto it = p.begin(); it != p.end();) {
+    it = it->second == 0 ? p.erase(it) : std::next(it);
+  }
+}
+
+std::optional<Poly> polyOf(const Expr& e);
+
 std::optional<LinForm> linOf(const Expr& e) {
+  if (e->isDivision()) {
+    const auto p = polyOf(e);
+    if (!p) return std::nullopt;
+    LinForm f;
+    for (const auto& [mono, k] : *p) {
+      if (mono.empty()) f.c = k;
+      else if (mono.size() == 1) f.coeffs[mono[0]] = k;
+      else return std::nullopt;
+    }
+    return f;
+  }
   switch (e->kind) {
     case ExprTerm::Kind::Const: {
       LinForm f;
@@ -92,24 +121,172 @@ std::optional<LinForm> linOf(const Expr& e) {
       dropZeroCoeffs(f);
       return f;
     }
+    default:
+      break;
   }
   return std::nullopt;
 }
 
-constexpr int kSubstDepth = 16;
-
-Expr substRec(const Expr& e, const std::map<std::string, Expr>& m, int depth) {
-  if (depth <= 0 || e->kind == ExprTerm::Kind::Const) return e;
+// One substitution pass. The map is kept fully substituted (see substMap), so a
+// single pass is complete and cannot loop.
+Expr applyMap(const Expr& e, const std::map<std::string, Expr>& m) {
+  if (e->kind == ExprTerm::Kind::Const) return e;
   if (e->kind == ExprTerm::Kind::Var) {
     auto it = m.find(e->name);
-    if (it == m.end()) return e;
-    return substRec(it->second, m, depth - 1);
+    return it == m.end() ? e : it->second;
   }
   std::vector<Expr> args;
   args.reserve(e->args.size());
-  for (const auto& a : e->args) args.push_back(substRec(a, m, depth));
-  return e->kind == ExprTerm::Kind::Add ? ExprTerm::add(std::move(args))
-                                        : ExprTerm::mul(std::move(args));
+  for (const auto& a : e->args) args.push_back(applyMap(a, m));
+  return ExprTerm::rebuild(e, std::move(args));
+}
+
+bool occurs(const std::string& var, const Expr& e) {
+  if (e->kind == ExprTerm::Kind::Var) return e->name == var;
+  for (const auto& a : e->args) {
+    if (occurs(var, a)) return true;
+  }
+  return false;
+}
+
+Expr fromLin(const LinForm& f) {
+  std::vector<Expr> terms;
+  for (const auto& [k, v] : f.coeffs) {
+    terms.push_back(v == 1 ? ExprTerm::var(k)
+                           : ExprTerm::mul({ExprTerm::constant(v), ExprTerm::var(k)}));
+  }
+  if (f.c != 0 || terms.empty()) terms.push_back(ExprTerm::constant(f.c));
+  return terms.size() == 1 ? terms[0] : ExprTerm::add(std::move(terms));
+}
+
+int64_t floorDiv(int64_t a, int64_t c) { return a / c - ((a % c != 0) && ((a < 0) != (c < 0))); }
+int64_t ceilDiv(int64_t a, int64_t c) { return -floorDiv(-a, c); }
+
+// A deterministic spelling of a polynomial, to name an opaque term after it.
+std::string polyText(const Poly& p) {
+  std::string s;
+  for (const auto& [mono, c] : p) {
+    s += std::to_string(c);
+    for (const std::string& a : mono) s += "*" + a;
+    s += ";";
+  }
+  return s;
+}
+
+// e floordiv c, e ceildiv c, e mod c. Exact when the inner polynomial is
+// divisible by c (or constant); otherwise one opaque atom, floordiv(inner', c),
+// named after the inner polynomial so equal divisions are the same atom:
+//   ceildiv(e, c) = floordiv(e + c - 1, c)     mod(e, c) = e - c * floordiv(e, c)
+std::optional<Poly> divisionPoly(const Expr& e) {
+  const int64_t c = e->args[1]->c;
+  auto inner = polyOf(e->args[0]);
+  if (!inner || c <= 0) return std::nullopt;
+  const bool constant = inner->empty() || (inner->size() == 1 && inner->begin()->first.empty());
+  if (constant) {
+    const int64_t v = inner->empty() ? 0 : inner->begin()->second;
+    const int64_t r = e->kind == ExprTerm::Kind::FloorDiv  ? floorDiv(v, c)
+                      : e->kind == ExprTerm::Kind::CeilDiv ? ceilDiv(v, c)
+                                                           : v - c * floorDiv(v, c);
+    Poly p;
+    if (r != 0) p[{}] = r;
+    return p;
+  }
+  bool divisible = true;
+  for (const auto& [mono, k] : *inner) divisible = divisible && k % c == 0;
+  if (divisible) {
+    if (e->kind == ExprTerm::Kind::Mod) return Poly{};
+    Poly q;
+    for (const auto& [mono, k] : *inner) q[mono] = k / c;
+    return q;
+  }
+  Poly arg = *inner;
+  if (e->kind == ExprTerm::Kind::CeilDiv) {
+    arg[{}] += c - 1;
+    dropZeros(arg);
+  }
+  const std::string atom = "{floordiv " + polyText(arg) + " by " + std::to_string(c) + "}";
+  if (e->kind != ExprTerm::Kind::Mod) return Poly{{{atom}, 1}};
+  Poly m = *inner;  // e - c * q
+  auto s = safeAdd(m[{atom}], -c);
+  if (!s) return std::nullopt;
+  m[{atom}] = *s;
+  dropZeros(m);
+  return m;
+}
+
+// Every non-exact floordiv term in `e`, with the bounds that define it:
+//   q = floordiv(x, c)   =>   c * q <= x   and   x <= c * q + c - 1
+// (ceildiv(x, c) is floordiv(x + c - 1, c); mod is defined through floordiv.)
+void divisionBounds(const Expr& e, std::vector<std::pair<Expr, Expr>>* out);
+
+std::optional<Poly> polyOf(const Expr& e) {
+  if (e->isDivision()) return divisionPoly(e);
+  switch (e->kind) {
+    case ExprTerm::Kind::Const: {
+      Poly p;
+      if (e->c != 0) p[{}] = e->c;
+      return p;
+    }
+    case ExprTerm::Kind::Var:
+      return Poly{{{e->name}, 1}};
+    case ExprTerm::Kind::Add: {
+      Poly acc;
+      for (const auto& a : e->args) {
+        auto p = polyOf(a);
+        if (!p) return std::nullopt;
+        for (const auto& [m, c] : *p) {
+          auto s = safeAdd(acc[m], c);
+          if (!s) return std::nullopt;
+          acc[m] = *s;
+        }
+      }
+      dropZeros(acc);
+      return acc;
+    }
+    case ExprTerm::Kind::Mul: {
+      Poly acc{{{}, 1}};
+      for (const auto& a : e->args) {
+        auto p = polyOf(a);
+        if (!p) return std::nullopt;
+        Poly next;
+        for (const auto& [m1, c1] : acc) {
+          for (const auto& [m2, c2] : *p) {
+            Monomial m = m1;
+            m.insert(m.end(), m2.begin(), m2.end());
+            std::sort(m.begin(), m.end());
+            auto prod = safeMul(c1, c2);
+            if (!prod) return std::nullopt;
+            auto s = safeAdd(next[m], *prod);
+            if (!s) return std::nullopt;
+            next[m] = *s;
+          }
+        }
+        dropZeros(next);
+        if (next.size() > kMaxPolyTerms) return std::nullopt;
+        acc = std::move(next);
+      }
+      return acc;
+    }
+    default:  // divisions are handled before the switch
+      break;
+  }
+  return std::nullopt;
+}
+
+void divisionBounds(const Expr& e, std::vector<std::pair<Expr, Expr>>* out) {
+  for (const Expr& a : e->args) divisionBounds(a, out);
+  if (!e->isDivision()) return;
+  const int64_t c = e->args[1]->c;
+  Expr x = e->args[0];
+  if (e->kind == ExprTerm::Kind::CeilDiv) x = ExprTerm::add({x, ExprTerm::constant(c - 1)});
+  const auto p = polyOf(ExprTerm::div(ExprTerm::Kind::FloorDiv, x, c));
+  if (!p || p->size() != 1 || p->begin()->first.size() != 1 || p->begin()->second != 1 ||
+      p->begin()->first[0].rfind("{floordiv", 0) != 0) {
+    return;  // an exact division needs no bounds
+  }
+  const Expr cq = ExprTerm::mul({ExprTerm::constant(c), ExprTerm::var(p->begin()->first[0])});
+  out->emplace_back(cq, x);
+  out->emplace_back(x, ExprTerm::add({cq, ExprTerm::constant(c - 1)}));
 }
 
 }  // namespace
@@ -142,12 +319,43 @@ Expr ExprTerm::mul(std::vector<Expr> xs) {
   return e;
 }
 
+Expr ExprTerm::div(Kind kind, Expr x, int64_t c) {
+  auto e = std::make_shared<ExprTerm>();
+  e->kind = kind;
+  e->args = {std::move(x), constant(c)};
+  return e;
+}
+
+Expr ExprTerm::rebuild(const Expr& like, std::vector<Expr> args) {
+  switch (like->kind) {
+    case Kind::Add: return add(std::move(args));
+    case Kind::Mul: return mul(std::move(args));
+    case Kind::FloorDiv:
+    case Kind::CeilDiv:
+    case Kind::Mod: {
+      auto e = std::make_shared<ExprTerm>();
+      e->kind = like->kind;
+      e->args = std::move(args);
+      return e;
+    }
+    default: return like;
+  }
+}
+
 std::string pretty(const Expr& e) {
   switch (e->kind) {
     case ExprTerm::Kind::Const:
       return std::to_string(e->c);
     case ExprTerm::Kind::Var:
       return e->name;
+    case ExprTerm::Kind::FloorDiv:
+    case ExprTerm::Kind::CeilDiv:
+    case ExprTerm::Kind::Mod: {
+      const char* op = e->kind == ExprTerm::Kind::FloorDiv  ? " floordiv "
+                       : e->kind == ExprTerm::Kind::CeilDiv ? " ceildiv "
+                                                            : " mod ";
+      return "(" + pretty(e->args[0]) + op + pretty(e->args[1]) + ")";
+    }
     default: {
       const char* sep = e->kind == ExprTerm::Kind::Add ? " + " : " * ";
       std::string out = "(";
@@ -159,6 +367,23 @@ std::string pretty(const Expr& e) {
       return out;
     }
   }
+}
+
+bool linearize(const Expr& e, int64_t* c, std::map<std::string, int64_t>* coeffs) {
+  const auto p = polyOf(e);  // expands products first: (a + 1) * 2 is linear
+  if (!p) return false;
+  *c = 0;
+  coeffs->clear();
+  for (const auto& [mono, k] : *p) {
+    if (mono.empty()) {
+      *c = k;
+    } else if (mono.size() == 1) {
+      (*coeffs)[mono[0]] = k;
+    } else {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool structurallyEqual(const Expr& a, const Expr& b) {
@@ -181,19 +406,6 @@ const char* toString(Tri t) {
   return "?";
 }
 
-void Solver::assertEqual(const Expr& a, const Expr& b) {
-  equalities_.emplace_back(a, b);
-}
-
-void Solver::assertRange(const std::string& var, int64_t lo, int64_t hi) {
-  ranges_[var] = {lo, hi};
-}
-
-void Solver::assertMod(const std::string& var, int64_t modulus,
-                       int64_t residue) {
-  mods_.emplace_back(var, modulus, residue);
-}
-
 std::optional<std::pair<int64_t, int64_t>> Solver::rangeOf(
     const std::string& var) const {
   auto it = ranges_.find(var);
@@ -201,27 +413,106 @@ std::optional<std::pair<int64_t, int64_t>> Solver::rangeOf(
   return it->second;
 }
 
-std::map<std::string, Expr> Solver::substMap() const {
-  std::map<std::string, Expr> m;
+// Orient each equality into `atom -> expression`, in assertion order:
+//   1. a bare atom on either side (`%9 = 2 * %2`, `tile = 128`, `%9 = %2`), or
+//   2. a linear equation with a unit-coefficient atom, solved for it
+//      (`%m + 1 = %n`  ->  `%m -> %n - 1`).
+// An atom is never mapped to an expression containing itself, and every right
+// side is rewritten when a new atom is mapped, so the map stays acyclic and one
+// substitution pass is complete. Equalities that cannot be oriented (e.g.
+// `a * b = c * d`) are kept but only checked, never substituted.
+const std::map<std::string, Expr>& Solver::substMap() const {
+  if (subst_valid_) return subst_map_;
+  subst_map_.clear();
+  residual_.clear();
+  auto bind = [&](const std::string& var, const Expr& rhs) {
+    const std::map<std::string, Expr> one{{var, rhs}};
+    for (auto& [k, v] : subst_map_) v = applyMap(v, one);
+    subst_map_[var] = rhs;
+  };
   for (const auto& [a, b] : equalities_) {
-    if (a->kind == ExprTerm::Kind::Var) m[a->name] = b;
-    if (b->kind == ExprTerm::Kind::Var) m[b->name] = a;
+    const Expr a2 = applyMap(a, subst_map_);
+    const Expr b2 = applyMap(b, subst_map_);
+    if (a2->kind == ExprTerm::Kind::Var && !occurs(a2->name, b2)) {
+      bind(a2->name, b2);
+      continue;
+    }
+    if (b2->kind == ExprTerm::Kind::Var && !occurs(b2->name, a2)) {
+      bind(b2->name, a2);
+      continue;
+    }
+    const auto la = linOf(a2);
+    const auto lb = linOf(b2);
+    if (!la || !lb) {
+      residual_.emplace_back(a, b);
+      continue;
+    }
+    LinForm d = *la;  // d == 0
+    d.c -= lb->c;
+    for (const auto& [k, v] : lb->coeffs) d.coeffs[k] -= v;
+    dropZeroCoeffs(d);
+    for (const auto& [k, v] : d.coeffs) {
+      if (v != 1 && v != -1) continue;
+      // v*k + rest == 0  ->  k == -rest / v  ==  -v * rest  (v is +-1)
+      LinForm rest = d;
+      rest.coeffs.erase(k);
+      rest.c *= -v;
+      for (auto& [rk, rv] : rest.coeffs) rv *= -v;
+      bind(k, fromLin(rest));
+      break;
+    }
   }
-  return m;
+  subst_valid_ = true;
+  return subst_map_;
 }
 
-Expr Solver::subst(const Expr& e) const {
-  return substRec(e, substMap(), kSubstDepth);
+Expr Solver::subst(const Expr& e) const { return applyMap(e, substMap()); }
+
+std::optional<int64_t> Solver::localConstantValue(const Expr& e) const {
+  const auto p = polyOf(subst(e));
+  if (!p) return std::nullopt;
+  if (p->empty()) return int64_t{0};
+  if (p->size() == 1 && p->begin()->first.empty()) return p->begin()->second;
+  return std::nullopt;
 }
 
 Solver::Interval Solver::evalInterval(const Expr& e) const {
+  if (e->isDivision()) {
+    const int64_t c = e->args[1]->c;
+    const Interval in = evalInterval(e->args[0]);
+    if (e->kind == ExprTerm::Kind::Mod) {
+      if (in.lo && in.hi && floorDiv(*in.lo, c) == floorDiv(*in.hi, c)) {
+        return {*in.lo - c * floorDiv(*in.lo, c), *in.hi - c * floorDiv(*in.hi, c)};
+      }
+      return {int64_t{0}, c - 1};
+    }
+    auto f = e->kind == ExprTerm::Kind::FloorDiv ? floorDiv : ceilDiv;
+    Interval out;
+    if (in.lo) out.lo = f(*in.lo, c);
+    if (in.hi) out.hi = f(*in.hi, c);
+    return out;
+  }
   switch (e->kind) {
     case ExprTerm::Kind::Const:
       return {e->c, e->c};
     case ExprTerm::Kind::Var: {
-      auto it = ranges_.find(e->name);
-      if (it == ranges_.end()) return {std::nullopt, std::nullopt};
-      return {it->second.first, it->second.second};
+      // A range fact, tightened by constant bounds among the <= facts
+      // (`0 <= %n` gives %n a lower bound of 0).
+      Interval out;
+      if (auto it = ranges_.find(e->name); it != ranges_.end()) {
+        out = {it->second.first, it->second.second};
+      }
+      for (const auto& [lo, hi] : le_facts_) {
+        if (lo->kind == ExprTerm::Kind::Const && hi->kind == ExprTerm::Kind::Var &&
+            hi->name == e->name && (!out.lo || lo->c > *out.lo)) {
+          out.lo = lo->c;
+        }
+        if (hi->kind == ExprTerm::Kind::Const && lo->kind == ExprTerm::Kind::Var &&
+            lo->name == e->name && (!out.hi || hi->c < *out.hi)) {
+          out.hi = hi->c;
+        }
+      }
+      return out;
     }
     case ExprTerm::Kind::Add: {
       Interval acc{0, 0};
@@ -233,26 +524,45 @@ Solver::Interval Solver::evalInterval(const Expr& e) const {
       return acc;
     }
     case ExprTerm::Kind::Mul: {
+      // Both sides bounded: all four corner products (any overflow: unknown).
+      // Both sides non-negative: [lo * lo, hi * hi], hi unbounded if either is.
+      // Anything else: unknown. (Skipping an undefined corner would be unsound.)
       Interval acc{1, 1};
       for (const auto& a : e->args) {
         const Interval ia = evalInterval(a);
-        std::vector<int64_t> prods;
-        for (const auto x : {acc.lo, acc.hi}) {
-          for (const auto y : {ia.lo, ia.hi}) {
-            if (auto p = safeMul(x, y)) prods.push_back(*p);
+        if (acc.lo && acc.hi && ia.lo && ia.hi) {
+          std::vector<int64_t> prods;
+          for (const auto x : {acc.lo, acc.hi}) {
+            for (const auto y : {ia.lo, ia.hi}) {
+              const auto p = safeMul(x, y);
+              if (!p) return {std::nullopt, std::nullopt};
+              prods.push_back(*p);
+            }
           }
+          acc = {*std::min_element(prods.begin(), prods.end()),
+                 *std::max_element(prods.begin(), prods.end())};
+        } else if (acc.lo && ia.lo && *acc.lo >= 0 && *ia.lo >= 0) {
+          const auto lo = safeMul(acc.lo, ia.lo);
+          if (!lo) return {std::nullopt, std::nullopt};
+          acc = {lo, acc.hi && ia.hi ? safeMul(acc.hi, ia.hi) : std::nullopt};
+        } else {
+          return {std::nullopt, std::nullopt};
         }
-        if (prods.empty()) return {std::nullopt, std::nullopt};
-        acc = {*std::min_element(prods.begin(), prods.end()),
-               *std::max_element(prods.begin(), prods.end())};
       }
       return acc;
     }
+    default:  // divisions are handled before the switch
+      break;
   }
   return {std::nullopt, std::nullopt};
 }
 
 std::optional<int64_t> Solver::residueOf(const Expr& e, int64_t m) const {
+  if (e->isDivision()) {
+    // (x mod c) mod m == x mod m when m divides c; otherwise unknown.
+    if (e->kind == ExprTerm::Kind::Mod && e->args[1]->c % m == 0) return residueOf(e->args[0], m);
+    return std::nullopt;
+  }
   switch (e->kind) {
     case ExprTerm::Kind::Const:
       return normMod(e->c, m);
@@ -296,31 +606,42 @@ std::optional<int64_t> Solver::residueOf(const Expr& e, int64_t m) const {
       }
       return acc;
     }
+    default:  // divisions are handled before the switch
+      break;
   }
   return std::nullopt;
 }
 
-Tri Solver::isEqual(const Expr& a, const Expr& b) const {
+// Equality decided on polynomial normal forms after substitution: a zero
+// difference is Yes, a nonzero constant difference is No. A difference that still
+// contains atoms is No only when its interval excludes zero; otherwise it could
+// vanish, so the honest answer is Unknown.
+Tri Solver::localIsEqual(const Expr& a, const Expr& b) const {
   const Expr a2 = subst(a);
   const Expr b2 = subst(b);
-  const auto la = linOf(a2);
-  const auto lb = linOf(b2);
-  if (la && lb) {
-    if (*la == *lb) return Tri::Yes;
-    LinForm d;
-    d.c = la->c - lb->c;
-    d.coeffs = la->coeffs;
-    for (const auto& [k, v] : lb->coeffs) d.coeffs[k] -= v;
-    dropZeroCoeffs(d);
-    // A nonzero constant difference proves inequality; a difference containing
-    // unknowns could still vanish, so the honest answer is Unknown.
-    if (d.coeffs.empty()) return d.c == 0 ? Tri::Yes : Tri::No;
+  const Expr diff = ExprTerm::add({a2, ExprTerm::mul({ExprTerm::constant(-1), b2})});
+  if (const auto d = polyOf(diff)) {
+    if (d->empty()) return Tri::Yes;
+    if (d->size() == 1 && d->begin()->first.empty()) return Tri::No;
+    // An equality that could not be oriented (`a * b = c + d`) still proves
+    // exactly itself, up to sign.
+    for (const auto& [l, r] : residual_) {
+      const Expr rd = ExprTerm::add({subst(l), ExprTerm::mul({ExprTerm::constant(-1), subst(r)})});
+      const auto p = polyOf(rd);
+      if (!p) continue;
+      if (*p == *d) return Tri::Yes;
+      Poly neg = *p;
+      for (auto& [mono, c] : neg) c = -c;
+      if (neg == *d) return Tri::Yes;
+    }
+    const Interval iv = evalInterval(diff);
+    if ((iv.lo && *iv.lo > 0) || (iv.hi && *iv.hi < 0)) return Tri::No;
     return Tri::Unknown;
   }
   return structurallyEqual(a2, b2) ? Tri::Yes : Tri::Unknown;
 }
 
-Tri Solver::isLess(const Expr& a, const Expr& b) const {
+Tri Solver::localIsLess(const Expr& a, const Expr& b) const {
   const Interval ia = evalInterval(subst(a));
   const Interval ib = evalInterval(subst(b));
   if (ia.hi && ib.lo && *ia.hi < *ib.lo) return Tri::Yes;
@@ -328,7 +649,7 @@ Tri Solver::isLess(const Expr& a, const Expr& b) const {
   return Tri::Unknown;
 }
 
-Tri Solver::aligned(const Expr& e, int64_t modulus) const {
+Tri Solver::localAligned(const Expr& e, int64_t modulus) const {
   if (modulus <= 0) return Tri::Unknown;
   const auto r = residueOf(subst(e), modulus);
   if (!r) return Tri::Unknown;
@@ -341,13 +662,9 @@ std::pair<std::optional<int64_t>, std::optional<int64_t>> Solver::bounds(
   return {i.lo, i.hi};
 }
 
-void Solver::assertLe(const Expr& a, const Expr& b) {
-  le_facts_.emplace_back(a, b);
-}
-
 // a <= b, decided from: constant differences, asserted <= facts with the same
 // linear shape, and interval bounds. Unknown is honest.
-Tri Solver::lessOrEqual(const Expr& a, const Expr& b) const {
+Tri Solver::localLessOrEqual(const Expr& a, const Expr& b) const {
   const Expr a2 = subst(a);
   const Expr b2 = subst(b);
   const auto ca = linOf(a2);
@@ -362,7 +679,11 @@ Tri Solver::lessOrEqual(const Expr& a, const Expr& b) const {
     if (d.coeffs.empty()) return d.c <= 0 ? Tri::Yes : Tri::No;
 
     // Same-shape implication: if F <= 0 is a fact and D <= F, then D <= 0.
-    for (const auto& [fa, fb] : le_facts_) {
+    // Division terms bring their defining bounds along.
+    std::vector<std::pair<Expr, Expr>> facts = le_facts_;
+    divisionBounds(a2, &facts);
+    divisionBounds(b2, &facts);
+    for (const auto& [fa, fb] : facts) {
       const auto cfa = linOf(subst(fa));
       const auto cfb = linOf(subst(fb));
       if (!cfa || !cfb) continue;
@@ -388,4 +709,147 @@ Tri Solver::lessOrEqual(const Expr& a, const Expr& b) const {
   return Tri::Unknown;
 }
 
-}  // namespace bridgeir::symbolic
+
+// ---- backends -------------------------------------------------------------------
+
+Backend backend() {
+  static const Backend b = [] {
+    const char* v = std::getenv("BRRR_SOLVER");
+    const std::string want = v ? v : "";
+    if (!z3::available()) return Backend::Local;
+    if (want == "local") return Backend::Local;
+    if (want == "check") return Backend::Check;
+    return Backend::Z3;
+  }();
+  return b;
+}
+
+const char* backendName() {
+  switch (backend()) {
+    case Backend::Local: return "local";
+    case Backend::Z3: return "z3";
+    case Backend::Check: return "check";
+  }
+  return "?";
+}
+
+namespace {
+size_t g_disagreements = 0;
+}
+
+size_t solverDisagreements() { return g_disagreements; }
+
+Solver::LazySession::LazySession() = default;
+Solver::LazySession::~LazySession() = default;
+Solver::LazySession::LazySession(const LazySession&) {}
+Solver::LazySession& Solver::LazySession::operator=(const LazySession&) {
+  p.reset();
+  return *this;
+}
+
+z3::Session& Solver::session() const {
+  if (!z3_.p) {
+    z3_.p = std::make_unique<z3::Session>();
+    for (const auto& [a, b] : equalities_) z3_.p->assertEqual(a, b);
+    for (const auto& [a, b] : le_facts_) z3_.p->assertLe(a, b);
+    for (const auto& [v, r] : ranges_) z3_.p->assertRange(v, r.first, r.second);
+    for (const auto& [v, m, r] : mods_) z3_.p->assertMod(v, m, r);
+  }
+  return *z3_.p;
+}
+
+Tri Solver::decide(Tri local, Tri z3, const char* what, const Expr& a, const Expr& b) const {
+  if (local != Tri::Unknown && z3 != Tri::Unknown && local != z3) {
+    ++g_disagreements;
+    std::fprintf(stderr, "solver check: %s %s %s -> local %s, z3 %s\n", pretty(a).c_str(), what,
+                 b ? pretty(b).c_str() : "", toString(local), toString(z3));
+  }
+  return z3;
+}
+
+// ---- facts ------------------------------------------------------------------------
+
+void Solver::assertEqual(const Expr& a, const Expr& b) {
+  equalities_.emplace_back(a, b);
+  subst_valid_ = false;
+  if (z3_.p) z3_.p->assertEqual(a, b);
+}
+
+void Solver::assertRange(const std::string& var, int64_t lo, int64_t hi) {
+  ranges_[var] = {lo, hi};
+  if (z3_.p) z3_.p->assertRange(var, lo, hi);
+}
+
+void Solver::assertMod(const std::string& var, int64_t modulus, int64_t residue) {
+  mods_.emplace_back(var, modulus, residue);
+  if (z3_.p) z3_.p->assertMod(var, modulus, residue);
+}
+
+void Solver::assertLe(const Expr& a, const Expr& b) {
+  le_facts_.emplace_back(a, b);
+  if (z3_.p) z3_.p->assertLe(a, b);
+}
+
+// ---- questions --------------------------------------------------------------------
+
+Tri Solver::isEqual(const Expr& a, const Expr& b) const {
+  // Theorems first: equal normal forms, or a nonzero constant difference.
+  const Expr diff = ExprTerm::add({subst(a), ExprTerm::mul({ExprTerm::constant(-1), subst(b)})});
+  if (const auto d = polyOf(diff)) {
+    if (d->empty()) return Tri::Yes;
+    if (d->size() == 1 && d->begin()->first.empty()) return Tri::No;
+  }
+  switch (backend()) {
+    case Backend::Local: return localIsEqual(a, b);
+    case Backend::Z3: return session().isEqual(a, b);
+    case Backend::Check: return decide(localIsEqual(a, b), session().isEqual(a, b), "==", a, b);
+  }
+  return Tri::Unknown;
+}
+
+Tri Solver::lessOrEqual(const Expr& a, const Expr& b) const {
+  const auto d = linOf(ExprTerm::add({subst(a), ExprTerm::mul({ExprTerm::constant(-1), subst(b)})}));
+  if (d && d->coeffs.empty()) return d->c <= 0 ? Tri::Yes : Tri::No;
+  switch (backend()) {
+    case Backend::Local: return localLessOrEqual(a, b);
+    case Backend::Z3: return session().lessOrEqual(a, b);
+    case Backend::Check:
+      return decide(localLessOrEqual(a, b), session().lessOrEqual(a, b), "<=", a, b);
+  }
+  return Tri::Unknown;
+}
+
+Tri Solver::isLess(const Expr& a, const Expr& b) const {
+  const auto d = linOf(ExprTerm::add({subst(a), ExprTerm::mul({ExprTerm::constant(-1), subst(b)})}));
+  if (d && d->coeffs.empty()) return d->c < 0 ? Tri::Yes : Tri::No;
+  switch (backend()) {
+    case Backend::Local: return localIsLess(a, b);
+    case Backend::Z3: return session().isLess(a, b);
+    case Backend::Check: return decide(localIsLess(a, b), session().isLess(a, b), "<", a, b);
+  }
+  return Tri::Unknown;
+}
+
+Tri Solver::aligned(const Expr& e, int64_t modulus) const {
+  if (modulus <= 0) return Tri::Unknown;
+  if (const auto c = polyOf(subst(e)); c && (c->empty() || (c->size() == 1 && c->begin()->first.empty()))) {
+    const int64_t v = c->empty() ? 0 : c->begin()->second;
+    return normMod(v, modulus) == 0 ? Tri::Yes : Tri::No;
+  }
+  switch (backend()) {
+    case Backend::Local: return localAligned(e, modulus);
+    case Backend::Z3: return session().aligned(e, modulus);
+    case Backend::Check:
+      return decide(localAligned(e, modulus), session().aligned(e, modulus), "aligned to",
+                    e, ExprTerm::constant(modulus));
+  }
+  return Tri::Unknown;
+}
+
+std::optional<int64_t> Solver::constantValue(const Expr& e) const {
+  if (const auto local = localConstantValue(e)) return local;  // a constant normal form
+  if (backend() == Backend::Local) return std::nullopt;
+  return session().constantValue(e);
+}
+
+}  // namespace brrr::symbolic

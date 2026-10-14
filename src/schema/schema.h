@@ -1,12 +1,23 @@
-// The schema registry: the language's definition.
+// The schema registry: the vocabulary of the language, as data.
 //
-// Kinds are declared as data — named ports, a results policy, typed attributes,
-// optional inheritance (`kind relu < unary`) and traits (interfaces). Scalars are
-// primitive types, also declared as data. Everything a checker, a pass, or an
-// agent needs to know about a kind lives here, not in stringly conventions buried
-// in pass code.
+// A kind declares its operands, successors, results, attributes, regions and
+// traits, and optionally what its result *means* (`expr:`) and how operand shapes
+// relate (`shape:`). Checkers, the solver and passes read these declarations; no
+// kind needs C++ to be understood.
 //
-// Grammar and policies: docs/scratch/schema-registry.md.
+//   kind add {
+//     operands: lhs, rhs
+//     expr: lhs + rhs              # integer meaning, for the solver
+//     shape: S, S -> S             # S = a whole shape
+//     traits: pure
+//   }
+//   kind icmp {
+//     operands: lhs, rhs
+//     attrs: pred: enum(eq|ne|lt|le|gt|ge)
+//   }
+//   scalar f16 { domain: float  bits: 16 }
+//
+// Grammar and the standard vocabulary: docs/scratch/schema-registry.md.
 #pragma once
 
 #include <cstdint>
@@ -14,55 +25,59 @@
 #include <string>
 #include <vector>
 
-namespace bridgeir::schema {
+namespace brrr::schema {
 
 struct Kind {
   std::string name;
-  std::string parent;  // `kind X < Parent`
+  std::string parent;  // `kind X < Parent` copies unspecified fields
 
-  // Operands: positional, named. `operands: none` is explicit; a trailing `*`
-  // marks a variadic tail.
+  // Operands: positional and named; a trailing `*` makes the last one variadic.
   bool operands_specified = false;
-  bool operands_none = false;
-  bool operands_variadic = false;
   std::vector<std::string> operands;
-  // Port types, parallel to `operands` ("" or "any" = unchecked):
-  //   value -> must reference a value-producing node
-  //   block -> must reference a node with trait `block`
-  //   edge  -> must reference a node with trait `edge`
-  std::vector<std::string> operand_types;
-  // >0: operands are a tuple of this width, repeated (schema syntax `(value,
-  // block)*`). This makes grouping a *declared* fact the checker proves
-  // generically. Currently unused (no kind repeats a tuple), kept as a capability.
-  size_t operand_tuple_width = 0;
+  bool operands_variadic = false;
 
-  // Results: `value` (default) or `none` (terminator; may not be used as operand).
+  // Successors: how many `^block(...)` targets (-1 = any number).
+  bool successors_specified = false;
+  int successors = 0;
+
+  // Results: exact count, or variadic (`value*`).
   bool results_specified = false;
-  bool results_value = true;
+  int results = 1;
+  bool results_variadic = false;
 
-  // Attributes: Free (default) | None | Closed set with types
-  // (int, float, str, sym, dtype, expr, dims).
+  // Attributes: `free` (default) | `none` | a closed list of `name: type`, where a
+  // trailing `?` on the name makes it optional. Types: int, float, bool, str, type,
+  // array, any, enum(a|b|...).
   enum class AttrPolicy { Free, None, Closed };
   bool attrs_specified = false;
   AttrPolicy attr_policy = AttrPolicy::Free;
-  std::map<std::string, std::string> attrs;  // name -> type
+  struct Attr {
+    std::string type;
+    bool optional = false;
+  };
+  std::map<std::string, Attr> attrs;
 
-  // Interfaces: dispatchable by rules and checkers as effect handling lands.
+  bool regions_specified = false;
+  int regions = 0;
+
+  std::string result_type;  // fixed type of result 0 (`type: index`)
+  std::string expr;   // symbolic meaning of result 0 (see sema)
+  std::string shape;  // shape rule (see sema)
   std::vector<std::string> traits;
+
+  bool hasTrait(const std::string& t) const;
 };
 
-// Primitive data types are declared, not assumed.
 struct Scalar {
   std::string name;
-  std::string domain;  // int | uint | float | bool | index
+  std::string domain;  // int | uint | float | bool | index | ptr
   int64_t bits = 0;    // 0 = unspecified
 };
 
 class Registry {
  public:
   const Kind* find(const std::string& name) const;
-  // Resolve `< Parent` by copying unspecified fields from the parent.
-  bool add(Kind k, std::string* err);
+  bool add(Kind k, std::string* err);  // resolves `< Parent`
 
   const Scalar* findScalar(const std::string& name) const;
   bool addScalar(Scalar s, std::string* err);
@@ -76,12 +91,17 @@ class Registry {
 };
 
 bool parseSchema(const std::string& text, Registry* reg, std::string* err);
+// Canonical text of one kind (what `brrr schema` prints).
+std::string printKind(const Kind& k);
 
-// Compose the standard vocabulary image. `std_kinds` and `control_kinds` load the
-// optional modules; with both false only the core module is present.
+// The standard vocabulary ships as modules: `core` (scalars, return), `std`
+// (arithmetic, tensors), `control` (branches, loops).
+std::string coreSchemaText();
+std::string stdSchemaText();
+std::string controlSchemaText();
 Registry buildRegistry(bool std_kinds, bool control_kinds);
 
-std::string coreSchemaText();
-const Registry& coreRegistry();
+// Structural kinds are part of the language, not the vocabulary.
+bool isStructural(const std::string& kind);  // module | func | block | arg
 
-}  // namespace bridgeir::schema
+}  // namespace brrr::schema

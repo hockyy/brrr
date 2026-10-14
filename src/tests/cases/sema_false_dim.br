@@ -1,0 +1,5 @@
+# expect: dim 1: lhs vs rhs: 128 == 100 is false
+func @f(%x: tensor<[4, 128], f16>, %y: tensor<[4, 100], f16>) {
+  %z = add %x, %y
+  return
+}

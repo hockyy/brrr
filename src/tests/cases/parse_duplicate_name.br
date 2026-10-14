@@ -1,0 +1,5 @@
+# expect: duplicate value name '%x'
+func @f(%x: index) -> index {
+  %x = add %x, 1
+  return %x
+}

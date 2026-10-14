@@ -1,0 +1,5 @@
+# expect: dim 0 of %neg is negative: -8 < 0
+func @f(%y: tensor<[8], f32>) {
+  %neg = reshape %y : tensor<[-8], f32>
+  return
+}

@@ -1,7 +1,0 @@
-# non-canonical input: names are optional; ids and names both work as references
-func  @add(n1)  {
-    n2 acc = param  other=2 idx=0
-    n3 bias = param idx=1
-    n4 sum = add acc bias  beta=1.5e0
-    n5 out = func.return n4   # trailing comment; n4 referenced by id here
-}

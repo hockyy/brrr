@@ -1,0 +1,6 @@
+# expect: passes 1 value(s) to ^b, which takes 0
+func @f(%x: index) {
+  br ^b(%x)
+^b:
+  return
+}

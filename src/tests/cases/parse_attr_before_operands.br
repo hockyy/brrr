@@ -1,0 +1,5 @@
+# expect: attributes come after operands
+func @f(%a: index, %b: index) {
+  %c = icmp pred=gt %a, %b
+  return
+}

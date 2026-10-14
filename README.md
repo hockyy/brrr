@@ -1,40 +1,88 @@
-# BridgeIR
+# Brrr
 
-An agent-native compiler: extendable, fast, and loose.
+**B**ot-**R**eadable, **R**easoned, **R**eproducible. Compiler go brrr.
+(Formerly BridgeIR; files are still `.br`.)
 
-BridgeIR treats compilation as a feedback loop. Every artifact that drives a compile —
-pipelines, passes, definitions, verifiers, invariants, schedules — is data that agents
-can compose, generate, and load at runtime, and every compilation may specialize the
-compiler to the problem at hand. The core stays small; components are added, the
-compiler is never rewritten.
+A small compiler IR, written from scratch in C++20 with no MLIR or LLVM
+dependency, built around three ideas MLIR does not have:
 
-## Principles
+1. **Stable identity.** Every node keeps its id across every edit and every
+   pass. MLIR has no operation identity beyond a pointer, and its printer
+   renumbers `%0, %1, ...` on every print.
+2. **Expressions as values.** A tensor dimension, a fact, or an integer operand is
+   an expression over SSA values: `tensor<[2 * %n, 64], f16>`, `sub %i, 1`,
+   `fact 0 <= %i <= %n`. A solver (Z3, with local rules as a fallback and
+   cross-check) judges every shape equation as Yes, No or Unknown. Nothing is
+   guessed, and an Unknown can become a runtime guard. This
+   replaces MLIR's `?` dimensions, `OpFoldResult`, and affine maps.
+3. **Compilation as a recorded, branchable history.** Every pipeline run has an id.
+   Every stage stores the IR before and after it, and an agent (or a person) can
+   inspect any stage, branch from it, edit the pipeline or the IR, and resume.
 
-1. **Agent-first feedback.** Structured diagnostics, per-stage IR snapshots, and
-   cause→effect telemetry — built for automated agents to act on. AI-assisted
-   compiling is the primary interface, not an afterthought.
-2. **Extendable and loose.** Narrow interfaces plus manifests; components are
-   discovered and loaded at runtime. A new kernel, model, frontend, or backend is
-   added by adding components.
-3. **Self-specializing, but staged.** Every compile may mint fresh pipelines, rewrite
-   sets, schedules, and definitions — generated from specs, content-addressed and
-   cached, with per-stage time budgets, so compile latency stays state-of-the-art.
-   Search happens in agent time; application happens in compile time.
-4. **Sustainable.** A new kernel class costs new schedules/rewrites as data and, at
-   most, a new dialect. Files touched in the core: zero.
-5. **Fast, on three clocks.** Time to extend, compile latency (agent loop latency is
-   product latency), and generated-kernel performance.
-6. **Own the core; borrow at the edges.** The IR, definitions registry, verifiers,
-   passes, and feedback are ours, built from scratch — small, fast, data-first, no
-   heavyweight dependencies. Codegen and other worlds (LLVM, NPU toolchains, MLIR
-   ecosystems) plug in at the edges as replaceable adapters.
+```
+func @sum_to_n(%n: index) -> index {
+  %zero = const 0 : index
+  %has = icmp %n, %zero pred=gt
+  cond_br %has, ^body(%zero, %n), ^exit(%zero)
+^body(%acc: index, %i: index):
+  fact 0 <= %i <= %n                # proven on both edges into ^body
+  %i2 = sub %i, 1                   # to the solver, %i2 means %i - 1
+  %acc2 = add %acc, %i
+  %more = icmp %i2, %zero pred=gt
+  cond_br %more, ^body(%acc2, %i2), ^exit(%acc2)
+^exit(%r: index):
+  return %r
+}
+```
+
+## Try it
+
+```
+cmake -S src -B src/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build src/build
+ctest --test-dir src/build --output-on-failure
+```
+
+Then follow the tour in [`src/showcase/`](src/showcase/README.md): identity,
+facts, vocabulary, control flow, loops, symbolic shapes, modules, and pipeline runs.
+
+## Status
+
+Prototype. What works and is tested (four `ctest` suites, ~170 CLI checks):
+
+- the v1 language ([spec](docs/scratch/syntax-v1.md)): parser, both printings
+  (clean, and stored with ids), round-trip, recovering ids from edited clean text;
+- vocabulary as schema data: operands, successors, typed attributes, result
+  types, symbolic meanings (`expr:`), shape rules (`shape:`);
+- verification: structure, dominance, successor and loop arity; shape rules
+  checked by the solver; facts checked by role (invariants on every incoming
+  edge, with branch conditions; loops by induction; lemmas);
+- expressions with `floordiv`/`ceildiv`/`mod` by constants, and an exact bridge
+  to MLIR affine maps both ways (`to-affine` puts each operand on the right side
+  of `OpFoldResult`: static attribute, value, or `affine.apply`);
+- the solver: Z3 when available, otherwise local rules; `BRRR_SOLVER=check`
+  asks both, and the test suite fails if they ever disagree
+  ([solver notes](docs/scratch/solver.md));
+- passes, one self-registering C++ file each: `infer-shapes`, `fold-constants`,
+  `fold-reshape`, `insert-guards`, `reconcile-casts`, `dce`, and `canonicalize`
+  (rewrites each integer expression to its simplest form that the solver proves
+  equal);
+- the run store: `run`, `resume`, `branch`, `show`, `runs`, with hand edits as
+  recorded stages and rollback of any stage that fails verification.
+
+Not yet: a rewrite-pattern engine, code generation (the plan is to emit LLVM IR text), call ops and
+interprocedural preconditions, `min`/`max` in expressions, a full MLIR
+importer/exporter (only affine maps so far), a binary format, and any performance
+measurement against MLIR. "Faster than MLIR"
+is a goal, not a result: the core builds in seconds, but compile-time speed has
+not been benchmarked.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `src/` | the BridgeIR core library (planned; C++20, no heavy deps) |
-| `docs/` | the paper (LaTeX — `docs/main.tex`) |
-| `docs/scratch/` | working notes, decisions, design log |
-
-Status: design phase.
+| `src/` | the library and the `brrr` CLI ([README](src/README.md)) |
+| `src/showcase/` | a guided tour, one concept per file |
+| `src/examples/` | external IRs mapped in: LLVM, torch.fx, AscendNPU HIVM, `scf.while` |
+| `docs/scratch/` | design notes and the decision log; [`syntax-v1.md`](docs/scratch/syntax-v1.md) is the spec |
+| `docs/` | the paper draft (LaTeX) |

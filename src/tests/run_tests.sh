@@ -1,518 +1,223 @@
 #!/usr/bin/env bash
-# BridgeIR core tests: stable identity, editable names, canonical text, facts,
-# schemas (primitives, inheritance, traits), JSON and C-like encodings.
+# Brrr CLI tests (v1).
+#   * every showcase file and example verifies and round-trips (both forms)
+#   * every case in tests/cases with an `# expect: <text>` line fails `check`
+#     with that text (warn_* cases are warnings: they fail only with --strict)
+#   * identity, facts, shapes, JSON, schema, and the run store behave as documented
 set -u
 
-BIN="${1:?usage: run_tests.sh <bridgeir-binary> <cases-dir>}"
-CASES="${2:?usage: run_tests.sh <bridgeir-binary> <cases-dir>}"
+BIN="${1:?usage: run_tests.sh <brrr-binary> <cases-dir>}"
+CASES="${2:?usage: run_tests.sh <brrr-binary> <cases-dir>}"
+SRC="$(cd "$CASES/../.." && pwd)"
+SHOWCASE="$SRC/showcase"
+EXAMPLES="$SRC/examples"
+SCHEMAS="$SRC/tests/schemas"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 fail=0
 
-check_text() { # <name> <expected-file> <command...>
-  local name="$1" expected="$2"
+pass() { echo "ok: $1"; }
+flunk() {
+  echo "FAIL: $1"
+  [ -n "${2:-}" ] && printf '%s\n' "$2" | head -8 | sed 's/^/    /'
+  fail=1
+}
+# contains <name> <needle> <command...>: stdout+stderr of the command contains needle
+contains() {
+  local name="$1" needle="$2"
   shift 2
-  local actual
-  actual="$("$@" 2>/dev/null)"
-  if [ "$actual" == "$(cat "$expected")" ]; then
-    echo "ok: $name"
-  else
-    echo "FAIL: $name"
-    diff <(printf '%s\n' "$actual") "$expected" | head -20
-    fail=1
-  fi
+  local out
+  out="$("$@" 2>&1)"
+  if printf '%s' "$out" | grep -qF -- "$needle"; then pass "$name"; else flunk "$name" "$out"; fi
+}
+# status <name> <expected-exit> <command...>
+status() {
+  local name="$1" want="$2"
+  shift 2
+  "$@" >/dev/null 2>&1
+  local got=$?
+  if [ "$got" -eq "$want" ]; then pass "$name"; else flunk "$name" "exit $got, expected $want"; fi
 }
 
-check_text "print canonicalizes input" "$CASES/add.canon.br" \
-  "$BIN" print "$CASES/add.bad.br"
-check_text "demo mints fresh id, preserves old ids" "$CASES/demo.canon.br" \
-  "$BIN" demo "$CASES/add.canon.br"
-
-if "$BIN" roundtrip "$CASES/add.canon.br" >/dev/null 2>&1; then
-  echo "ok: roundtrip id-stable"
-else
-  echo "FAIL: roundtrip id-stable"
-  fail=1
-fi
-
-if "$BIN" demo "$CASES/add.canon.br" 2>&1 >/dev/null | grep -q "insert n6"; then
-  echo "ok: journal records insert n6"
-else
-  echo "FAIL: journal records insert n6"
-  fail=1
-fi
-
-if "$BIN" demo "$CASES/add.canon.br" 2>&1 >/dev/null | grep -q "retarget n5"; then
-  echo "ok: journal records retarget n5"
-else
-  echo "FAIL: journal records retarget n5"
-  fail=1
-fi
-
-# Rename by id: references printed by name follow the rename.
-rename_out="$("$BIN" rename "$CASES/add.canon.br" n4 total 2>/dev/null)"
-if echo "$rename_out" | grep -q "n4 total = add n2 n3 beta=1.5" &&
-   echo "$rename_out" | grep -q "n5 out = func.return total"; then
-  echo "ok: rename by id updates node and references"
-else
-  echo "FAIL: rename by id"
-  fail=1
-fi
-
-# Rename by name works too, and the journal records the history.
-rename_out="$("$BIN" rename "$CASES/add.canon.br" sum subtotal 2>/dev/null)"
-if echo "$rename_out" | grep -q "n4 subtotal = add n2 n3 beta=1.5"; then
-  echo "ok: rename by name"
-else
-  echo "FAIL: rename by name"
-  fail=1
-fi
-
-if "$BIN" rename "$CASES/add.canon.br" n4 total 2>&1 >/dev/null \
-     | grep -q "rename n4: sum -> total"; then
-  echo "ok: journal records rename history"
-else
-  echo "FAIL: journal records rename history"
-  fail=1
-fi
-
-# Unknown names are rejected.
-if "$BIN" print "$CASES/bad-ref.br" >/dev/null 2>&1; then
-  echo "FAIL: unknown name accepted"
-  fail=1
-else
-  echo "ok: unknown name rejected"
-fi
-
-# Example mappings of external IRs must round-trip.
-EXAMPLES="$(cd "$CASES/../.." && pwd)/examples"
-for ex in "$EXAMPLES"/*.br; do
-  if "$BIN" roundtrip "$ex" >/dev/null 2>&1; then
-    echo "ok: roundtrip example $(basename "$ex")"
-  else
-    echo "FAIL: roundtrip example $ex"
-    fail=1
-  fi
+# ---- every showcase file and example verifies and round-trips ----------------
+for f in "$SHOWCASE"/*.br "$EXAMPLES"/*.br; do
+  status "verifies: ${f#$SRC/}" 0 "$BIN" check "$f"
+  status "round-trips: ${f#$SRC/}" 0 "$BIN" roundtrip "$f"
 done
 
-# First-hand symbols: facts live in the IR document.
-if "$BIN" facts "$EXAMPLES/reshape_facts.br" >/dev/null 2>&1; then
-  echo "ok: facts apply cleanly from the document"
-else
-  echo "FAIL: facts apply cleanly from the document"
-  fail=1
-fi
-
-fold_out="$("$BIN" fold-reshape "$EXAMPLES/reshape_facts.br" 2>&1)"
-if echo "$fold_out" | grep -q "isEqual(src_size, dst_size) -> Yes" &&
-   echo "$fold_out" | grep -q "aligned(dst_size, 16) -> Yes" &&
-   echo "$fold_out" | grep -q "\[journal\] compose" &&
-   echo "$fold_out" | grep -q "r_fused"; then
-  echo "ok: fold-reshape composes from facts (first-hand queries)"
-else
-  echo "FAIL: fold-reshape composes from facts"
-  echo "$fold_out" | head -8
-  fail=1
-fi
-
-# Contradictory facts make the document ill-formed: every load path rejects them.
-for c in print facts fold-reshape; do
-  if "$BIN" "$c" "$CASES/facts_conflict.br" >/dev/null 2>&1; then
-    echo "FAIL: contradictory facts accepted by '$c'"
-    fail=1
-  else
-    echo "ok: contradictory facts rejected at load ($c)"
-  fi
+# ---- negative cases: each fails with the message it declares -----------------
+for f in "$CASES"/*.br; do
+  expect="$(sed -n 's/^# expect: //p' "$f")"
+  [ -z "$expect" ] && continue
+  name="$(basename "$f")"
+  contains "$name reports: $expect" "$expect" "$BIN" check "$f"
+  case "$name" in
+    warn_*)
+      status "$name passes without --strict" 0 "$BIN" check "$f"
+      status "$name fails with --strict" 1 "$BIN" check --strict "$f"
+      ;;
+    *) status "$name is rejected" 1 "$BIN" check "$f" ;;
+  esac
 done
 
-# Schema registry: declared vocabulary is strict; foreign vocabulary is reported.
-SCHEMAS="$(cd "$CASES/../schemas" && pwd)"
-if "$BIN" check "$EXAMPLES/reshape_facts.br" 2>/dev/null \
-     | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: declared vocabulary validates cleanly"
-else
-  echo "FAIL: declared vocabulary not clean"
-  fail=1
-fi
+contains "no-wrap: nsw=true gives i32 arithmetic a meaning" "errors: 0, warnings: 0" \
+  "$BIN" check "$CASES/nsw_i32.br"
+contains "schema extension: --schemas declares a kind" "errors: 0, warnings: 0" \
+  "$BIN" check --schemas="$SCHEMAS/extra.bs" "$CASES/neg_ok.br"
+contains "schema extension: without it the kind is foreign" "unknown kind 'neg'" \
+  "$BIN" check "$CASES/neg_ok.br"
+contains "include cycles are rejected" "include cycle" "$BIN" print "$CASES/cycle_a.br"
 
-check_out="$("$BIN" check "$EXAMPLES/dot_llvm.br" 2>/dev/null)"
-if echo "$check_out" | grep -q "errors: 0" &&
-   echo "$check_out" | grep -q "unknown kind"; then
-  echo "ok: foreign vocabulary reported as warnings"
+# ---- identity --------------------------------------------------------------------
+contains "clean form: an unnamed value prints as its id" "%5 = relu %sum" \
+  "$BIN" print "$SHOWCASE/01_identity.br"
+contains "stored form: definitions carry ids" "n5 %5 = relu %sum" \
+  "$BIN" print --ids "$SHOWCASE/01_identity.br"
+"$BIN" print --ids "$SHOWCASE/04_cfg.br" > "$TMP/stored.br" 2>/dev/null
+if [ "$("$BIN" print --ids "$TMP/stored.br" 2>/dev/null)" == "$(cat "$TMP/stored.br")" ]; then
+  pass "stored form re-parses to itself (ids kept)"
 else
-  echo "FAIL: foreign vocabulary handling"
-  fail=1
+  flunk "stored form re-parses to itself (ids kept)"
 fi
+contains "rename updates the definition" "%total = add %x, %y" \
+  "$BIN" rename "$SHOWCASE/01_identity.br" %sum %total
+contains "rename updates every use" "%5 = relu %total" \
+  "$BIN" rename "$SHOWCASE/01_identity.br" %sum %total
+contains "rename is journaled" "[journal] rename" \
+  "$BIN" rename "$SHOWCASE/01_identity.br" %sum %total
 
-if "$BIN" check "$CASES/bad_schema.br" >/dev/null 2>&1; then
-  echo "FAIL: schema violation accepted"
-  fail=1
-else
-  echo "ok: schema violation rejected"
-fi
+# ---- facts and queries -------------------------------------------------------------
+contains "ask: a definition is a fact" "-> Yes" "$BIN" ask "$SHOWCASE/02_facts.br" @split "%n == 128 * %tiles"
+contains "ask: module facts" "-> Yes" "$BIN" ask "$SHOWCASE/02_facts.br" root "aligned(tile, 16)"
+contains "ask: a value means its expression" "-> Yes" "$BIN" ask "$SHOWCASE/04_cfg.br" ^body "%i2 + 1 == %i"
+contains "ask: loop invariant in scope" "-> Yes" "$BIN" ask "$SHOWCASE/05_loop.br" ^iter "%i2 <= %n"
+contains "ask: honest Unknown" "-> Unknown" "$BIN" ask "$SHOWCASE/06_shapes.br" @scores "%b <= %s"
+contains "facts lists facts by scope" "[^body] fact 0 <= %i <= %n" "$BIN" facts "$SHOWCASE/04_cfg.br"
+sed 's/^  fact %n >= 0$//' "$SHOWCASE/05_loop.br" > "$TMP/no_pre.br"
+contains "induction: the invariant needs the precondition on entry" \
+  "invariant 0 <= %i of ^iter on loop entry: 0 <= %n is not proven" "$BIN" check "$TMP/no_pre.br"
+sed 's/%more = icmp %i2, %zero pred=gt/%more = icmp %i2, %zero pred=ne/' "$SHOWCASE/04_cfg.br" > "$TMP/ne.br"
+contains "branch conditions: pred=ne no longer proves the back edge" \
+  "from ^body (true edge): 0 <= %i2 is not proven" "$BIN" check "$TMP/ne.br"
 
-if "$BIN" print "$CASES/bad_schema.br" >/dev/null 2>&1; then
-  echo "FAIL: schema violation accepted at load"
-  fail=1
-else
-  echo "ok: schema violation rejected at load (print)"
-fi
+# ---- shapes and meanings -------------------------------------------------------
+contains "types: matmul infers [M, N]" "%scores = matmul : tensor<[%b * %s, %s * %b], f16>  (inferred)" \
+  "$BIN" types "$SHOWCASE/06_shapes.br"
+contains "types: a fresh dimension prints as ?" "%idx = nonzero : tensor<[?], index>" \
+  "$BIN" types "$SHOWCASE/06_shapes.br"
+contains "types: dim means a dimension" "%c = dim : index  (inferred)  means dim(%idx, 0)" \
+  "$BIN" types "$SHOWCASE/06_shapes.br"
+contains "types: index arithmetic has a meaning" "%i2 = sub : index  (inferred)  means %i - 1" \
+  "$BIN" types "$SHOWCASE/04_cfg.br"
 
-# Primitives are declared: unknown scalars are rejected.
-if "$BIN" check "$CASES/bad_dtype.br" >/dev/null 2>&1; then
-  echo "FAIL: unknown scalar accepted"
-  fail=1
-else
-  echo "ok: unknown scalar rejected (f8 is not a declared primitive)"
-fi
+# ---- division and the affine bridge ------------------------------------------------
+AFF="$SHOWCASE/09_affine.br"
+contains "ceildiv covers its input" "-> Yes" "$BIN" ask "$AFF" @tiles "%n <= %count * 32"
+contains "mod is in [0, c)" "-> Yes" "$BIN" ask "$AFF" @tiles "0 <= %lane <= 31"
+contains "an exact division simplifies" "-> Yes" "$BIN" ask "$AFF" @tiles "(4 * %n) floordiv 2 == 2 * %n"
+printf 'func @f(%%a: index) -> index {\n  %%b = apply %%a / 3\n  return %%b\n}\n' > "$TMP/slash.br"
+contains "/ is rejected: division must say how it rounds" "use floordiv or ceildiv" "$BIN" check "$TMP/slash.br"
+contains "to-affine: a constant is a static attribute" "static 4" "$BIN" to-affine "$AFF" @pinned "%mult"
+contains "to-affine: an apply exports as affine.apply" \
+  "defined as affine.apply affine_map<()[s0] -> ((s0 * 2) floordiv 3)>()[%base]" \
+  "$BIN" to-affine "$AFF" @tiles "%mult"
+contains "to-affine: function values are symbols" \
+  "affine.apply affine_map<()[s0, s1] -> (s0 * 4 + s1)>()[%n, %base]" \
+  "$BIN" to-affine "$AFF" @tiles "%n * 4 + %base"
+contains "to-affine: loop values are dims" "affine_map<(d0)[s0] -> (d0 * 4 + s0)>(%i)[%n]" \
+  "$BIN" to-affine "$SHOWCASE/05_loop.br" ^iter "%i * 4 + %n"
+contains "to-affine: a product of values is refused, by name" \
+  "not affine: %n * %base multiplies two non-constant terms" \
+  "$BIN" to-affine "$AFF" @tiles "%n * %base"
+contains "from-affine: substitutes dims and symbols" "%i * 4 + %n, %i floordiv 2" \
+  "$BIN" from-affine "affine_map<(d0)[s0] -> (d0 * 4 + s0, d0 floordiv 2)>" %i %n
+contains "from-affine: rejects names the map does not declare" "is not a dim or symbol" \
+  "$BIN" from-affine "affine_map<(d0) -> (d0 * d1)>" %i
 
-# --schemas extends the vocabulary (inheritance from a core kind).
-if "$BIN" check --schemas="$SCHEMAS/extra.bs" "$CASES/neg_ok.br" 2>/dev/null \
-     | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: --schemas extends the vocabulary (inheritance)"
-else
-  echo "FAIL: --schemas extension"
-  fail=1
-fi
+# ---- casts and signedness ------------------------------------------------------------
+X="$CASES/cross_signed.br"
+contains "cross-signed dims are exact arithmetic" "errors: 0, warnings: 0" "$BIN" check "$X"
+contains "a tensor argument's dims are non-negative" "-> Yes" "$BIN" ask "$X" @f "%a + %b >= 0"
+contains "cast: to= sets the scalar type" "%wide = cast : i64  (inferred)  means %a" "$BIN" types "$X"
+contains "cast: a widening means its operand" "-> Yes" "$BIN" ask "$X" @f "%wide == %a"
+contains "cast: a sign change may wrap, so it is opaque" "-> Unknown" "$BIN" ask "$X" @f "%u == %a"
+contains "reconcile-casts folds a round trip" "status: done" \
+  "$BIN" run "$CASES/warn_unrealized_cast.br" --passes=reconcile-casts,dce "--store=$TMP/casts"
+contains "after reconcile-casts nothing remains" "  return %x" "$BIN" show r1 "--store=$TMP/casts"
 
-schema_out="$("$BIN" schema 2>/dev/null)"
-if echo "$schema_out" | grep -q "kind relu < unary" &&
-   echo "$schema_out" | grep -q "scalar f16"; then
-  echo "ok: schema command shows inheritance and primitives"
-else
-  echo "FAIL: schema command"
-  fail=1
-fi
-
-# JSON encoding: same term model, universal notation.
-if "$BIN" to-json "$EXAMPLES/reshape_facts.br" 2>/dev/null \
-     | python3 -m json.tool >/dev/null 2>&1; then
-  echo "ok: to-json emits valid JSON"
-else
-  echo "FAIL: to-json validity"
-  fail=1
-fi
-if "$BIN" to-json "$EXAMPLES/reshape_facts.br" 2>/dev/null \
-     | grep -q '"kind": "reshape"'; then
-  echo "ok: JSON carries nodes and kinds"
-else
-  echo "FAIL: JSON node encoding"
-  fail=1
-fi
-
-# C-like view: readable skin, ids preserved as comments.
-clike_out="$("$BIN" print --c-like "$EXAMPLES/reshape_facts.br" 2>/dev/null)"
-if echo "$clike_out" | grep -q "assume src_size = 512;" &&
-   echo "$clike_out" | grep -q "auto r1 = reshape(x, in=src_size, out=mid);" &&
-   echo "$clike_out" | grep -q "// n3"; then
-  echo "ok: C-like view renders with stable ids as comments"
-else
-  echo "FAIL: C-like view"
-  echo "$clike_out" | head -8
-  fail=1
-fi
-
-# Modules: the top-level unit and symbol root.
-if "$BIN" check "$EXAMPLES/modules.br" 2>/dev/null \
-     | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: modules validate cleanly"
-else
-  echo "FAIL: module validation"
-  fail=1
-fi
-mod_out="$("$BIN" print "$EXAMPLES/modules.br" 2>/dev/null)"
-if echo "$mod_out" | grep -q "module @kernels(n1) {" &&
-   echo "$mod_out" | grep -q "  func @reshape_chain(n2) {"; then
-  echo "ok: module blocks print with nesting"
-else
-  echo "FAIL: module printing"
-  echo "$mod_out" | head -6
-  fail=1
-fi
-
-# #include: the rest is just modules.
-inc_out="$("$BIN" print "$EXAMPLES/app_includes.br" 2>/dev/null)"
-if echo "$inc_out" | grep -q "func @identity(n1) {" &&
-   echo "$inc_out" | grep -q "module @kernels(n10) {"; then
-  echo "ok: #include expands modules into one document"
-else
-  echo "FAIL: #include expansion"
-  echo "$inc_out" | head -8
-  fail=1
-fi
-if "$BIN" check "$EXAMPLES/app_includes.br" 2>/dev/null \
-     | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: included document validates cleanly"
-else
-  echo "FAIL: included document validation"
-  fail=1
-fi
-if "$BIN" print "$CASES/cycle_a.br" >/dev/null 2>&1; then
-  echo "FAIL: include cycle accepted"
-  fail=1
-else
-  echo "ok: include cycle rejected"
-fi
-
-# Scope headers carry their arguments. `block (int64 n10, int64 n11)` declares the
-# block's two arguments -- the `param idx=k` lines they replace, now written where
-# the arguments belong. Entries are `TYPE ID`: an argument is an id, never a name.
-hdr_out="$("$BIN" print "$CASES/block_header_args.br" 2>/dev/null)"
-if "$BIN" check "$CASES/block_header_args.br" 2>/dev/null | grep -q "errors: 0" &&
-   echo "$hdr_out" | grep -q "n9 join = block (int64 n10, int64 n11) {"; then
-  echo "ok: block arguments declared in the scope header (ids, no alias)"
-else
-  echo "FAIL: block header arguments"
-  fail=1
-fi
-if "$BIN" check "$CASES/bad_header_name.br" 2>&1 \
-     | grep -q "argument list entries are 'TYPE ID'"; then
-  echo "ok: a name in an argument list is rejected (no alias)"
-else
-  echo "FAIL: argument name accepted"
-  fail=1
-fi
-
-# Control flow: blocks are scopes; br/cbr/edge are declared kinds (no phi).
-if "$BIN" check "$EXAMPLES/loop_cfg.br" 2>/dev/null \
-     | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: control-flow vocabulary validates cleanly"
-else
-  echo "FAIL: control-flow validation"
-  fail=1
-fi
-cfg_out="$("$BIN" print "$EXAMPLES/loop_cfg.br" 2>/dev/null)"
-if echo "$cfg_out" | grep -q "n5 entry = block {" &&
-   echo "$cfg_out" | grep -q "e_body = edge body zero n2" &&
-   echo "$cfg_out" | grep -q "n10 body = block (int64 n11, int64 n12) {" &&
-   echo "$cfg_out" | grep -q "n9 = cbr has e_body e_exit"; then
-  echo "ok: block args print in the scope header (edges carry passed values)"
-else
-  echo "FAIL: control-flow printing"
-  echo "$cfg_out" | head -10
-  fail=1
-fi
-
-# Scoped invariants: facts hold where written; ask answers in-scope, unknown out.
-ask_in="$("$BIN" ask "$EXAMPLES/loop_cfg.br" body "n12 <= n2" 2>/dev/null)"
-ask_out="$("$BIN" ask "$EXAMPLES/loop_cfg.br" entry "n12 <= n2" 2>/dev/null)"
-if echo "$ask_in" | grep -q "\-> Yes" &&
-   echo "$ask_out" | grep -q "\-> Unknown"; then
-  echo "ok: scoped invariants answer inside the loop, unknown outside"
-else
-  echo "FAIL: scoped invariants"
-  echo "in:  $ask_in"
-  echo "out: $ask_out"
-  fail=1
-fi
-facts_out="$("$BIN" facts "$EXAMPLES/loop_cfg.br" 2>/dev/null)"
-if echo "$facts_out" | grep -q "\[body\]"; then
-  echo "ok: facts command shows scopes"
-else
-  echo "FAIL: facts scoping"
-  fail=1
-fi
-
-# Vocabulary is modular: core-only leaves control kinds unknown.
-core_only_out="$("$BIN" check --core-only "$EXAMPLES/loop_cfg.br" 2>/dev/null)"
-if echo "$core_only_out" | grep -q "errors: 0" &&
-   echo "$core_only_out" | grep -q "unknown kind 'block'"; then
-  echo "ok: control vocabulary is a module (unknown under --core-only)"
-else
-  echo "FAIL: module-ness of control vocabulary"
-  echo "$core_only_out" | head -6
-  fail=1
-fi
-
-# Block arguments: edges must match the target block's parameters.
-if "$BIN" check "$CASES/bad_edge.br" >/dev/null 2>&1; then
-  echo "FAIL: edge arity violation accepted"
-  fail=1
-else
-  echo "ok: edge arity violation rejected"
-fi
-
-# Verification asymmetry: edge checking is local and complete; there is no phi.
-if "$BIN" check "$CASES/bad_edge_use.br" >/dev/null 2>&1; then
-  echo "FAIL: edge misuse accepted"
-  fail=1
-else
-  echo "ok: edge misuse rejected (terminators only, exactly once)"
-fi
-
-# phi was removed from the language: it is no longer a declared kind, so using it
-# is reported as foreign vocabulary rather than validated.
-if "$BIN" check "$CASES/phi_removed.br" 2>&1 | grep -q "unknown kind 'phi'"; then
-  echo "ok: phi is no longer a language construct (foreign vocabulary)"
-else
-  echo "FAIL: phi still declared"
-  fail=1
-fi
-if "$BIN" schema 2>/dev/null | grep -Fq "kind phi"; then
-  echo "FAIL: schema still declares phi"
-  fail=1
-else
-  echo "ok: schema declares no phi"
-fi
-
-# Simple structured loops: scope + carried params + loop.yield, exits as ports.
-if "$BIN" check "$EXAMPLES/loop_simple.br" 2>/dev/null \
-     | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: simple loop validates cleanly"
-else
-  echo "FAIL: simple loop validation"
-  fail=1
-fi
-simple_out="$("$BIN" print "$EXAMPLES/loop_simple.br" 2>/dev/null)"
-if echo "$simple_out" | grep -q "n5 sum = loop (n6, n7) zero n2 {" &&
-   echo "$simple_out" | grep -q "n11 = loop.yield more new_acc next_i" &&
-   echo "$simple_out" | grep -q "n12 = func.return sum"; then
-  echo "ok: simple loop prints (carried args in header, yield, port exit)"
-else
-  echo "FAIL: simple loop printing"
-  echo "$simple_out" | head -14
-  fail=1
-fi
-if "$BIN" ask "$EXAMPLES/loop_simple.br" sum "n7 <= n2" 2>/dev/null \
-     | grep -q -- "-> Yes"; then
-  echo "ok: simple loop invariants are scoped to the loop"
-else
-  echo "FAIL: simple loop invariants"
-  fail=1
-fi
-if "$BIN" check "$CASES/bad_loop.br" >/dev/null 2>&1; then
-  echo "FAIL: loop yield arity violation accepted"
-  fail=1
-else
-  echo "ok: loop yield arity violation rejected"
-fi
-
-# C++-shaped sugar: `for`/`while` lower to loop + params + loop.yield.
-if "$BIN" check "$EXAMPLES/loop_cpp.br" 2>/dev/null \
-     | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: C++ for/while sugar validates cleanly"
-else
-  echo "FAIL: C++ for/while validation"
-  fail=1
-fi
-cpp_out="$("$BIN" print "$EXAMPLES/loop_cpp.br" 2>/dev/null)"
-if echo "$cpp_out" | grep -q "n5 sum = loop (n18, n19) zero n2 {" &&
-   echo "$cpp_out" | grep -q "= loop.yield more new_acc next_i" &&
-   echo "$cpp_out" | grep -q "n14 w = loop (n21) i {"; then
-  echo "ok: for/while lower to loop scopes (carried args in header + yield)"
-else
-  echo "FAIL: for/while lowering"
-  echo "$cpp_out" | head -12
-  fail=1
-fi
-if "$BIN" ask "$EXAMPLES/loop_cpp.br" sum "0 <= i" 2>/dev/null \
-     | grep -q -- "-> Yes"; then
-  echo "ok: invariants survive for-loop lowering"
-else
-  echo "FAIL: for-loop invariants"
-  fail=1
-fi
-if "$BIN" check "$CASES/bad_for.br" >/dev/null 2>&1; then
-  echo "FAIL: for-loop missing step accepted"
-  fail=1
-else
-  echo "ok: for-loop missing carried update rejected"
-fi
-
-# C++-shaped sugar: `if`/`else` lowers to cbr + blocks + edges + a join block.
-if "$BIN" check "$EXAMPLES/branch_cpp.br" 2>/dev/null \
-     | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: C++ if/else sugar validates cleanly"
-else
-  echo "FAIL: C++ if/else validation"
-  fail=1
-fi
-br_out="$("$BIN" print "$EXAMPLES/branch_cpp.br" 2>/dev/null)"
-if echo "$br_out" | grep -q "= cbr greater" &&
-   echo "$br_out" | grep -q "= edge pick n2" &&
-   echo "$br_out" | grep -q "n5 pick = block (n12) {"; then
-  echo "ok: if/else lowers to cbr + branch blocks + join block"
-else
-  echo "FAIL: if/else lowering"
-  echo "$br_out" | head -14
-  fail=1
-fi
-if "$BIN" ask "$EXAMPLES/branch_cpp.br" n10 "n2 >= n3" 2>/dev/null \
-     | grep -q -- "-> Yes"; then
-  echo "ok: branch facts are scoped to their block"
-else
-  echo "FAIL: branch-scoped facts"
-  fail=1
-fi
-if "$BIN" check "$CASES/bad_if.br" >/dev/null 2>&1; then
-  echo "FAIL: mismatched if-branch yields accepted"
-  fail=1
-else
-  echo "ok: mismatched if-branch yields rejected"
-fi
-
-# Lexical scoping: references must be visible through the scope chain.
-if "$BIN" check "$CASES/bad_scope.br" >/dev/null 2>&1; then
-  echo "FAIL: cross-scope reference accepted"
-  fail=1
-else
-  echo "ok: cross-scope reference rejected (lexical scoping + dominance)"
-fi
-# The sanctioned crossings stay legal: terminator -> edges; block args carry values.
-if "$BIN" check "$EXAMPLES/dot_llvm.br" 2>/dev/null | grep -q "errors: 0"; then
-  echo "ok: block-argument crossings remain legal (dot_llvm, no phi)"
-else
-  echo "FAIL: block-argument crossings rejected"
-  fail=1
-fi
-# scf.while lowered to CFG: the two-region form becomes a three-block cycle in the
-# canonical block-argument form (no phi); the edge/argument arity invariant holds.
-if "$BIN" roundtrip "$EXAMPLES/scf_while_cfg.br" >/dev/null 2>&1 \
-   && "$BIN" check "$EXAMPLES/scf_while_cfg.br" 2>/dev/null | grep -q "errors: 0, warnings: 0"; then
-  echo "ok: scf.while -> CFG cycle (block-argument form)"
-else
-  echo "FAIL: scf.while -> CFG cycle"
-  fail=1
-fi
-
-# Showcase tour: every file round-trips and validates cleanly.
-SHOWCASE="$(cd "$CASES/../../showcase" && pwd)"
-for br in "$SHOWCASE"/*.br; do
-  if "$BIN" roundtrip "$br" >/dev/null 2>&1; then
-    echo "ok: showcase roundtrip $(basename "$br")"
+# ---- the solver backend --------------------------------------------------------------
+if "$BIN" passes 2>/dev/null | grep -q "solver: z3"; then
+  # check mode asks the local rules and Z3 every question; any disagreement is a bug.
+  disagreements=""
+  for f in "$SHOWCASE"/*.br "$EXAMPLES"/*.br "$CASES"/*.br; do
+    d="$(BRRR_SOLVER=check "$BIN" check "$f" 2>&1 >/dev/null | grep "solver check:")"
+    [ -n "$d" ] && disagreements="$disagreements$f: $d"$'\n'
+  done
+  if [ -z "$disagreements" ]; then
+    pass "solver check: local rules and Z3 agree on every file"
   else
-    echo "FAIL: showcase roundtrip $br"
-    fail=1
+    flunk "solver check: local rules and Z3 agree on every file" "$disagreements"
   fi
-  if "$BIN" check "$br" 2>/dev/null | grep -q "errors: 0"; then
-    echo "ok: showcase check $(basename "$br")"
-  else
-    echo "FAIL: showcase check $br"
-    fail=1
-  fi
-done
-
-# Showcase queries: functor and scoped facts.
-if "$BIN" ask "$SHOWCASE/02_invariants.br" root "aligned(n, 16)" 2>/dev/null \
-     | grep -q -- "-> Yes"; then
-  echo "ok: showcase functor query (aligned)"
+  printf 'fact tile = 32\nfunc @f(%%n: index, %%i: index, %%x: tensor<[%%n], f32>) -> index {\n  fact %%n = 4 * tile\n  %%a = apply %%i * 4 + %%n - %%n\n  %%b = apply (%%n floordiv 32) * tile\n  %%c = apply (2 * %%i + 6) floordiv 2\n  %%y = reshape %%x : tensor<[%%n * 1 + 0], f32>\n  return %%a\n}\n' > "$TMP/canon.br"
+  contains "canonicalize runs" "status: done" "$BIN" run "$TMP/canon.br" --passes=canonicalize "--store=$TMP/canon"
+  contains "canonicalize: algebra" "%a = apply 4 * %i" "$BIN" show r1 "--store=$TMP/canon"
+  contains "canonicalize: facts give constants" "%b = apply 128" "$BIN" show r1 "--store=$TMP/canon"
+  contains "canonicalize: exact division" "%c = apply 3 + %i" "$BIN" show r1 "--store=$TMP/canon"
+  contains "canonicalize: result dims too" "reshape %x : tensor<[128], f32>" "$BIN" show r1 "--store=$TMP/canon"
+  contains "canonicalize: the signature stays as written" "%x: tensor<[%n], f32>" "$BIN" show r1 "--store=$TMP/canon"
 else
-  echo "FAIL: showcase functor query"
-  fail=1
-fi
-if "$BIN" ask "$SHOWCASE/04_control_cfg.br" then "n2 >= n3" 2>/dev/null \
-     | grep -q -- "-> Yes"; then
-  echo "ok: showcase branch-scoped facts"
-else
-  echo "FAIL: showcase branch facts"
-  fail=1
+  echo "skip: built without Z3 (solver checks and canonicalize)"
 fi
 
-# Vocabulary lives in compiler modules, not in documents.
-if "$BIN" check "$CASES/bad_vocab.br" 2>&1 \
-     | grep -q "cannot be declared in a document"; then
-  echo "ok: inline vocabulary in a document rejected"
+# ---- encodings and vocabulary ----------------------------------------------------
+PY=python3
+python3 -c '' >/dev/null 2>&1 || PY=python
+if "$BIN" to-json "$SHOWCASE/06_shapes.br" 2>/dev/null | "$PY" -m json.tool >/dev/null 2>&1; then
+  pass "to-json emits valid JSON"
 else
-  echo "FAIL: inline vocabulary accepted"
-  fail=1
+  flunk "to-json emits valid JSON"
 fi
+contains "to-json is version 1" '"version": 1' "$BIN" to-json "$SHOWCASE/01_identity.br"
+contains "schema prints shape rules" "shape: [M, K], [K, N] -> [M, N]" "$BIN" schema
+contains "schema prints meanings" "expr: lhs - rhs" "$BIN" schema
 
-exit $fail
+# ---- the run store ---------------------------------------------------------------
+STORE="--store=$TMP/store"
+contains "run: a pipeline file runs to the end" "status: done" \
+  "$BIN" run "$SHOWCASE/08_pipeline.br" --pipeline="$SHOWCASE/08_pipeline.txt" "$STORE"
+contains "show: the final state" "%y = relu %x : tensor<[%n, %m], f32>" "$BIN" show r1 "$STORE"
+contains "show: any stage" "%flat = reshape %x" "$BIN" show r1@1 "$STORE"
+contains "show --record: the stage's journal" "journal fold" "$BIN" show r1@2 --record "$STORE"
+contains "branch: a new run from a stage" "run r2 (from r1@1)" "$BIN" branch r1@1 --passes=dce "$STORE"
+contains "runs: lists parents" "r2  done  2 stage(s)  from r1@1" "$BIN" runs "$STORE"
+contains "run --steps pauses" "status: paused after stage 1" \
+  "$BIN" run "$SHOWCASE/08_pipeline.br" --pipeline="$SHOWCASE/08_pipeline.txt" --steps=1 "$STORE"
+printf 'dce\n' > "$TMP/store/runs/r3/pipeline.txt"
+contains "resume: runs the edited pipeline" "[2] dce  ok" "$BIN" resume r3 "$STORE"
+contains "a failing stage is rolled back" "unknown pass 'nope'" "$BIN" resume r1 --passes=nope "$STORE"
+status "a failed run exits 2" 2 "$BIN" resume r1 --passes=nope "$STORE"
+"$BIN" show r1@3 "$STORE" > "$TMP/edit.br" 2>/dev/null
+sed -i 's/  return %y/  %z = relu %y\n  return %z/' "$TMP/edit.br"
+contains "resume --state: a hand edit is a recorded stage" "edit.br  ok" \
+  "$BIN" resume r1 --state="$TMP/edit.br" "$STORE"
+contains "resume --state: ids are recovered by name" "matched" \
+  "$BIN" show r1@6 --record "$STORE"
+sed 's/%z = relu %y/%z = relu %nope/' "$TMP/edit.br" > "$TMP/broken.br"
+contains "a broken edit is rejected" "unknown value '%nope'" \
+  "$BIN" resume r1 --state="$TMP/broken.br" "$STORE"
+contains "insert-guards discharges Unknowns" "status: done" \
+  "$BIN" run "$CASES/warn_fresh_dims.br" --passes=insert-guards "$STORE"
+last="$("$BIN" runs "$STORE" | tail -1 | cut -d' ' -f1)"
+"$BIN" show "$last" "$STORE" > "$TMP/guarded.br" 2>/dev/null
+contains "after insert-guards the file checks clean" "errors: 0, warnings: 0" "$BIN" check "$TMP/guarded.br"
+contains "a guard names the fresh dimensions" "guard dim(%a, 0), dim(%b, 0) rel=eq" cat "$TMP/guarded.br"
+contains "fold-reshape uses the facts" "status: done" \
+  "$BIN" run "$EXAMPLES/reshape_facts.br" --passes=fold-reshape "$STORE"
+last="$("$BIN" runs "$STORE" | tail -1 | cut -d' ' -f1)"
+contains "fold-reshape removes the chain" "  return %x" "$BIN" show "$last" "$STORE"
+
+if [ "$fail" -ne 0 ]; then
+  echo "SOME TESTS FAILED"
+  exit 1
+fi
+echo "all CLI tests passed"

@@ -1,31 +1,7 @@
 # src
 
-The BridgeIR core library. C++20, own IR — no MLIR or LLVM dependency in the core.
-Codegen and interop live at the edges as adapters/subprocesses.
-Spec: `../docs/scratch/from-scratch-core.md`.
-
-## Status — prototype 5 (2026-10-13)
-
-Implemented:
-
-- **Dual identity**: stable machine ids + editable names; renames journaled.
-- **Canonical text format** with round-trip guarantee; facts are part of the
-  document (first-hand symbols: `fact N = 512`, `aligned`, `range`).
-- **Schema registry**: kinds as data — named ports, results policy, typed attrs,
-  inheritance (`kind relu < unary`), traits, and **declared primitives**
-  (`scalar f16 { domain: float, bits: 16 }`; `dtype=@f8` is rejected). Every load
-  validates declared vocabulary; foreign kinds are reported (`bridgeir check`,
-  `--schemas=<file>`).
-- **Symbolic layer**: equality / bounds / alignment queries, tri-state.
-- **Connector hub**: SymPy escalation with caching and attribution.
-- **Encodings**: canonical text (parse format), JSON (`to-json`), and a C-like
-  view (`print --c-like`) with ids preserved as comments.
-- **Provenance journal**; demo + fold-reshape passes.
-- **Tests**: `ctest` suites (core, types, symbolic, connector) + 30 CLI checks.
-
-Paradigm: **procedural core + object-shaped data** — passes/rules are procedures;
-nodes are records with kinds; methods live in rules (data), not on objects.
-See `../docs/scratch/paradigm.md`.
+The Brrr library and CLI. C++20, no MLIR or LLVM dependency in the core.
+The language is specified in [`../docs/scratch/syntax-v1.md`](../docs/scratch/syntax-v1.md).
 
 ## Build & test
 
@@ -33,20 +9,76 @@ See `../docs/scratch/paradigm.md`.
     cmake --build src/build
     ctest --test-dir src/build --output-on-failure
 
-## Walkthrough
+Z3 is optional: CMake looks in `third_party/z3` (override with
+`-DBRRR_Z3_ROOT=<dir>`) and the system paths, and without it the local rules
+decide alone. See [`../docs/scratch/solver.md`](../docs/scratch/solver.md);
+`BRRR_SOLVER=z3|local|check` picks the engine at run time.
 
-    src/build/bridgeir print     src/tests/cases/add.bad.br    # normalizes to canonical
-    src/build/bridgeir roundtrip src/tests/cases/add.canon.br  # ids survive reparse
-    src/build/bridgeir demo      src/tests/cases/add.canon.br  # n6 minted, old ids kept
-    src/build/bridgeir rename    src/tests/cases/add.canon.br sum total
-    src/build/bridgeir check     src/examples/reshape_facts.br # vocabulary report
-    src/build/bridgeir schema                                  # scalars + kinds
-    src/build/bridgeir to-json   src/examples/reshape_facts.br # JSON encoding
-    src/build/bridgeir print --c-like src/examples/reshape_facts.br  # mini-C++ view
-    src/build/bridgeir fold-reshape src/examples/reshape_facts.br    # facts-driven
+Suites: `core` (CLI checks in `tests/run_tests.sh`, with the negative cases in
+`tests/cases/` declaring the error they expect), `symbolic` (solver),
+`types` (unification), `connector` (SymPy escalation; needs Python with sympy).
 
-## Examples — external IRs mapped into BridgeIR
+## Layout
 
-`src/examples/`: `matmul_hivm.br` (AscendNPU-IR HIVM), `fx_mlp.br` (torch.fx),
-`dot_llvm.br` (clang LLVM IR CFG), `reshape_facts.br` (facts + fold-reshape).
-Design analysis: `../docs/scratch/external-ir-mapping.md`.
+| Directory | What |
+|---|---|
+| `ir/` | the IR model (`Node`, `Module`, journaled edits) and the text form: lexer, parser, both printers, id reconciliation |
+| `symbolic/` | expressions, facts, and the solver: local rules (polynomial normal form, linear inequalities, intervals, residues) and the Z3 backend (`z3_backend.cpp`) |
+| `schema/` | the vocabulary as data, and the standard `core` / `std` / `control` modules |
+| `verify/` | structural checks: arity, attributes, terminators, dominance, loops |
+| `sema/` | meanings, types and shape rules, fact roles, `verifyModule` |
+| `passes/` | one file per pass, each self-registering (`pass.h` explains how to write one) |
+| `pipeline/` | the run store: runs, stages, branches, edits |
+| `io/` | JSON encoding |
+| `interop/` | the MLIR affine bridge: affine maps <-> expressions |
+| `connectors/` | external solvers (SymPy), consulted only when the local solver says Unknown |
+| `types/` | the unification prototype (`ctest -R types`) |
+
+## Libraries
+
+| Target | Contents |
+|---|---|
+| `brrr_core` | the API: `ir/`, `schema/`, `symbolic/`, `verify/`, `sema/`, `interop/`, `io/`, `connectors/` |
+| `brrr_passes` | every `passes/*.cpp`, globbed (adding a pass edits no build file) |
+| `brrr` | the CLI: `tools/brrr_main.cpp` and the run store in `pipeline/` |
+
+## Writing a pass
+
+A pass is one `.cpp` file in `passes/` that ends with
+`BRRR_PASS(id, "name", "summary", fn)`. Reconfigure, and it shows up in
+`brrr passes` and works in pipelines. It edits the module only through the
+journaled `Module` methods. After each stage the run store verifies the module
+and round-trips it through text, so a broken pass is rolled back rather than
+trusted. `canonicalize.cpp`, at about 80 lines, is a complete example.
+
+## Commands
+
+    brrr print  <file> [--ids]          # clean form, or stored form with ids
+    brrr check  <file> [--strict]       # --strict: unproven equations are errors
+    brrr types  <file>                  # each value's type and meaning
+    brrr ask    <file> <scope> "<q>"    # scope: root | @func | ^block | nID
+    brrr facts  <file>
+    brrr rename <file> %old %new
+    brrr to-json <file>  |  roundtrip <file>  |  schema
+    brrr to-affine <file> <scope> "<e1>, <e2>"     # MLIR export, per OpFoldResult
+    brrr from-affine "<affine_map>" <dims...> <symbols...>   # MLIR import
+
+    brrr passes
+    brrr run    <file> --pipeline=<file> | --passes=a,b  [--steps=N] [--pause-on-warning]
+    brrr resume <run> [--pipeline=..|--passes=..] [--state=<edited.br>] [--steps=N]
+    brrr branch <run>@<k> [--pipeline=..|--passes=..] [--state=<edited.br>]
+    brrr runs
+    brrr show   <run>[@k] [--ids] [--record]
+
+Runs live in `.brrr/` (or `--store=<dir>`): content-addressed states, one
+manifest per run, an editable `pipeline.txt` of passes still to run, and a record
+per stage (before/after, diff, journal, issues).
+
+## Notes
+
+- Windows (MinGW): the runtime is linked statically so a different
+  `libstdc++-6.dll` on PATH cannot be loaded by mistake; output is LF-only.
+- With Z3 on Windows, `libz3.dll` and its MSVC runtime DLLs are copied next to
+  the binaries at configure time.
+- The C-like view and the C++-shaped sugar of v0 are gone; see the "Removed"
+  table in the spec.

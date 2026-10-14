@@ -1,0 +1,4 @@
+# expect: unknown value '%nope'
+func @f(%x: index) -> index {
+  return %nope
+}

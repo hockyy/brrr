@@ -1,12 +1,16 @@
 # Symbols and math-like type inference
 
+> **2026-10-14:** written for the v0 text format (`nN name = kind ...`, edge and
+> param nodes). The current language is [`syntax-v1.md`](syntax-v1.md); the
+> reasoning here still stands where v1 does not say otherwise.
+
 Status: design + prototype step 1, 2026-10-13. Companion to
 `external-ir-mapping.md` (which flagged ref-valued data and first-class types as gaps
 #3/#4). Prototype lives in `src/types/` with a test (`ctest -R types`).
 
 ## Part A — Symbols: names with binding semantics
 
-Everything named in BridgeIR is a **binding in a scope**. We already have the raw
+Everything named in Brrr is a **binding in a scope**. We already have the raw
 material: per-scope node names (unique, editable, rename-journaled). Two binding
 classes fall out naturally:
 
@@ -75,7 +79,7 @@ part that must be effortless.
 **Derived overlay, not canonical text.** Inferred types are *derived facts* keyed by
 stable node ids: they are not written into canonical text (keeps round-trip
 idempotent), and they can come with justification (the equations that produced them)
-— provenance-native typings. A `bridgeir types <file>` view prints them on demand.
+— provenance-native typings. A `brrr types <file>` view prints them on demand.
 
 **Why this stays agent-friendly**: adding typing for a new op = adding one data
 record; mistakes produce human-readable equations, not template errors; and the
@@ -109,7 +113,7 @@ Implemented now (`src/types/`, ~250 lines):
 Next steps:
 
 1. Type terms in the text format (a `Type` data kind instead of `type="..."` strings)
-   and a `bridgeir types` command over `.br` files.
+   and a `brrr types` command over `.br` files.
 2. Signature *files* (schema registry) so adding typing = adding data, not code.
 3. Symbol refs (`@name`, `@mod::@fn`) in the parser; symbol-use index; visibility.
 4. Tier-2 constraints (broadcast, alignment) as a rewriting pass; SMT only if needed.

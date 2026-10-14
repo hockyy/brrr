@@ -1,505 +1,448 @@
 #include "verify/check.h"
 
+#include <algorithm>
 #include <map>
+#include <set>
 
 #include "symbolic/expr_io.h"
+#include "symbolic/facts.h"
 
-namespace bridgeir::verify {
+namespace brrr::verify {
 namespace {
 
-std::string describeOperands(const schema::Kind& k) {
-  if (k.operands_none) return "no operands";
-  std::string s;
-  for (size_t i = 0; i < k.operands.size(); ++i) {
-    if (i) s += ", ";
-    const bool has_type = i < k.operand_types.size() &&
-                          !k.operand_types[i].empty() &&
-                          k.operand_types[i] != "any";
-    if (!k.operands[i].empty()) {
-      s += "'" + k.operands[i] + "'";
-    } else if (has_type) {
-      s += k.operand_types[i];
-    } else {
-      s += "value";
-    }
-  }
-  if (k.operand_tuple_width > 0) return "(" + s + ")*";
-  if (k.operands_variadic) s += "*";
-  return s;
+std::string countText(int n, const char* what) {
+  return std::to_string(n) + " " + what + (n == 1 ? "" : "s");
 }
 
-// Validate an attribute value against its declared type.
 bool attrMatches(const AttrValue& v, const std::string& type,
                  const schema::Registry& reg, std::string* why) {
-  if (type == "int") {
-    if (v.kind != AttrValue::Kind::Int) { *why = "expects an integer"; return false; }
-    return true;
+  using K = AttrValue::Kind;
+  if (type == "any") return true;
+  if (type == "int" && v.kind == K::Int) return true;
+  if (type == "float" && (v.kind == K::Float || v.kind == K::Int)) return true;
+  if (type == "bool" && v.kind == K::Bool) return true;
+  if (type == "str" && v.kind == K::Str) return true;
+  if (type == "array" && v.kind == K::Array) return true;
+  if (type == "type") {
+    if (v.kind == K::Type) return true;
+    if (v.kind == K::Ident && reg.findScalar(v.s)) return true;
+    *why = v.kind == K::Ident ? "'" + v.s + "' is not a declared type" : "expects a type";
+    return false;
   }
-  if (type == "float") {
-    if (v.kind != AttrValue::Kind::Float) { *why = "expects a float"; return false; }
-    return true;
-  }
-  if (type == "str") {
-    if (v.kind != AttrValue::Kind::Str) { *why = "expects a string"; return false; }
-    return true;
-  }
-  if (type == "sym") {
-    if (v.kind != AttrValue::Kind::Sym) { *why = "expects a symbol (@name)"; return false; }
-    return true;
-  }
-  if (type == "dtype") {
-    if (v.kind != AttrValue::Kind::Sym) {
-      *why = "expects a scalar symbol (@f16)";
-      return false;
-    }
-    if (!reg.findScalar(v.s)) {
-      *why = "unknown scalar '" + v.s + "' (not declared in the schema)";
-      return false;
-    }
-    return true;
-  }
-  if (type == "expr" || type == "dims") {
-    if (v.kind != AttrValue::Kind::Str) {
-      *why = "expects a quoted expression string";
-      return false;
-    }
-    std::vector<std::string> pieces;
-    if (type == "expr") {
-      pieces.push_back(v.s);
-    } else {
-      pieces = symbolic::splitTopLevel(v.s, ',');
-    }
-    for (const std::string& piece : pieces) {
-      std::string err;
-      if (!symbolic::parseExpr(piece, &err)) {
-        *why = "bad expression '" + piece + "': " + err;
-        return false;
+  if (type.rfind("enum(", 0) == 0) {
+    const std::string inner = type.substr(5, type.size() - 6);
+    std::vector<std::string> options;
+    std::string cur;
+    for (const char c : inner + "|") {
+      if (c == '|') {
+        options.push_back(cur);
+        cur.clear();
+      } else if (c != ' ') {
+        cur += c;
       }
     }
-    return true;
+    if (v.kind == K::Ident &&
+        std::find(options.begin(), options.end(), v.s) != options.end()) {
+      return true;
+    }
+    *why = "expects one of " + inner;
+    return false;
   }
-  *why = "unknown attribute type '" + type + "' in schema";
+  *why = "expects " + type;
   return false;
 }
+
+// Atoms of a type (dims) that name values.
+void typeUses(const Type& t, std::vector<ValueRef>* out) {
+  if (!t || !t->shaped) return;
+  std::set<std::string> atoms;
+  for (const auto& d : t->dims) symbolic::collectVars(d, &atoms);
+  for (const std::string& a : atoms) {
+    ValueRef v;
+    if (atomValue(a, &v)) out->push_back(v);
+  }
+}
+
+class Checker {
+ public:
+  Checker(const Module& m, const schema::Registry& reg) : m_(m), reg_(reg) {
+    for (size_t i = 0; i < m.nodes.size(); ++i) order_[m.nodes[i].id] = i;
+  }
+
+  std::vector<Issue> run() {
+    for (const Node& n : m_.nodes) {
+      if (schema::isStructural(n.kind)) {
+        if (n.kind == "func") checkReturns(n);
+        continue;
+      }
+      const schema::Kind* k = reg_.find(n.kind);
+      if (!k) {
+        foreign_.emplace(n.kind, n.id);
+      } else {
+        checkShape(n, *k);
+        if (k->hasTrait("unrealized")) {
+          warn(n.id, n.kind,
+               "an unrealized cast remains (run reconcile-casts, or finish the lowering)");
+        }
+      }
+    }
+    for (const Node& n : m_.nodes) checkTypes(n);
+    checkTerminators();
+    checkSuccessors();
+    checkLoops();
+    checkVisibility();
+    for (const auto& [kind, id] : foreign_) {
+      warn(id, kind, "unknown kind '" + kind + "' (foreign vocabulary: not checked)");
+    }
+    return std::move(out_);
+  }
+
+ private:
+  void error(NodeId id, const std::string& kind, const std::string& msg) {
+    out_.push_back({true, id, kind, msg});
+  }
+  void warn(NodeId id, const std::string& kind, const std::string& msg) {
+    out_.push_back({false, id, kind, msg});
+  }
+  const schema::Kind* kindOf(const Node& n) const { return reg_.find(n.kind); }
+  bool hasTrait(const Node& n, const char* t) const {
+    const schema::Kind* k = kindOf(n);
+    return k && k->hasTrait(t);
+  }
+  std::vector<const Node*> args(NodeId owner) const {
+    std::vector<const Node*> out;
+    for (const NodeId c : m_.childrenOf(owner)) {
+      const Node* a = m_.find(c);
+      if (a && a->kind == "arg") out.push_back(a);
+    }
+    return out;
+  }
+  std::string label(const Node* b) const {
+    return b ? "^" + b->symbol : std::string("?");
+  }
+
+  // ---- per-op structure, from the declaration -------------------------------
+
+  void checkShape(const Node& n, const schema::Kind& k) {
+    const int ops = static_cast<int>(n.operands.size());
+    const int want = static_cast<int>(k.operands.size());
+    if (k.operands_specified) {
+      if (k.operands_variadic ? ops < want - 1 : ops != want) {
+        error(n.id, n.kind, "expects " + countText(want, "operand") +
+                                (k.operands_variadic ? " or more" : "") + ", got " +
+                                std::to_string(ops));
+      }
+    }
+    const int succ = static_cast<int>(n.successors.size());
+    if (k.successors >= 0 && succ != k.successors) {
+      error(n.id, n.kind, "expects " + countText(k.successors, "successor") + ", got " +
+                              std::to_string(succ));
+    }
+    const int res = static_cast<int>(n.numResults());
+    if (!k.results_variadic && res != k.results) {
+      error(n.id, n.kind, "produces " + countText(k.results, "result") + ", but " +
+                              std::to_string(res) + " are named");
+    }
+    if (n.is_scope != (k.regions > 0)) {
+      error(n.id, n.kind, k.regions > 0 ? "needs a region ({ ... })" : "takes no region");
+    }
+    if (k.attr_policy == schema::Kind::AttrPolicy::None && !n.attrs.empty()) {
+      error(n.id, n.kind, "takes no attributes");
+    }
+    if (k.attr_policy == schema::Kind::AttrPolicy::Closed) {
+      for (const auto& [key, val] : n.attrs) {
+        auto it = k.attrs.find(key);
+        if (it == k.attrs.end()) {
+          error(n.id, n.kind, "unknown attribute '" + key + "'");
+          continue;
+        }
+        std::string why;
+        if (!attrMatches(val, it->second.type, reg_, &why)) {
+          error(n.id, n.kind, "attribute '" + key + "': " + why);
+        }
+      }
+      for (const auto& [key, a] : k.attrs) {
+        if (!a.optional && !n.attrs.count(key)) {
+          error(n.id, n.kind, "missing attribute '" + key + "' (" + a.type + ")");
+        }
+      }
+    }
+  }
+
+  void checkTypes(const Node& n) {
+    for (const Type& t : n.types) {
+      if (!t) continue;
+      const std::string& scalar = t->shaped ? t->elem : t->name;
+      if (!reg_.findScalar(scalar)) {
+        warn(n.id, n.kind, "unknown scalar type '" + scalar + "' (not declared in a schema)");
+      }
+    }
+  }
+
+  void checkReturns(const Node& f) {
+    if (f.types.empty()) return;
+    for (const Node& n : m_.nodes) {
+      if (n.kind != "return" || m_.namingScope(n.scope) != f.id) continue;
+      if (n.operands.size() != f.types.size()) {
+        error(n.id, n.kind, "returns " + std::to_string(n.operands.size()) + " value(s); @" +
+                                f.symbol + " declares " + std::to_string(f.types.size()));
+      }
+    }
+  }
+
+  // ---- control flow ---------------------------------------------------------
+
+  // The ops directly in a scope, in program order (args and blocks excluded).
+  std::vector<const Node*> opsIn(NodeId scope) const {
+    std::vector<const Node*> out;
+    for (const NodeId c : m_.childrenOf(scope)) {
+      const Node* n = m_.find(c);
+      if (n && n->kind != "arg" && n->kind != "block") out.push_back(n);
+    }
+    return out;
+  }
+
+  void checkTerminators() {
+    for (const Node& s : m_.nodes) {
+      if (s.kind != "block" && !(s.is_scope && s.kind != "module")) continue;
+      const std::vector<const Node*> ops = opsIn(s.id);
+      for (size_t i = 0; i + 1 < ops.size(); ++i) {
+        if (hasTrait(*ops[i], "terminator")) {
+          error(ops[i]->id, ops[i]->kind, "a terminator must be the last op of its block");
+        }
+      }
+      if (s.kind == "block") {
+        if (ops.empty()) {
+          error(s.id, "block", label(&s) + " is empty (it needs a terminator)");
+        } else if (kindOf(*ops.back()) && !hasTrait(*ops.back(), "terminator")) {
+          warn(ops.back()->id, ops.back()->kind,
+               label(&s) + " does not end with a terminator");
+        }
+      }
+    }
+  }
+
+  void checkSuccessors() {
+    for (const Node& n : m_.nodes) {
+      for (const Successor& s : n.successors) {
+        const Node* b = m_.find(s.block);
+        if (!b) continue;
+        if (b->scope != regionOf(n.scope)) {
+          error(n.id, n.kind, "branches to " + label(b) + ", which is outside this region");
+          continue;
+        }
+        const size_t want = args(b->id).size();
+        if (s.args.size() != want) {
+          error(n.id, n.kind, "passes " + std::to_string(s.args.size()) + " value(s) to " +
+                                  label(b) + ", which takes " + std::to_string(want));
+        }
+      }
+    }
+  }
+
+  void checkLoops() {
+    for (const Node& n : m_.nodes) {
+      if (n.kind == "continue_if") {
+        const Node* r = m_.find(regionOf(n.scope));
+        if (!r || !hasTrait(*r, "loop")) {
+          error(n.id, n.kind, "continue_if is only allowed in a loop region");
+        }
+      }
+      if (!hasTrait(n, "loop")) continue;
+      // Carried values: the entry block's arguments (`^iter(%acc: i64):`).
+      const Node* entry = nullptr;
+      for (const NodeId c : m_.childrenOf(n.id)) {
+        const Node* cn = m_.find(c);
+        if (cn && cn->kind == "block") {
+          entry = cn;
+          break;
+        }
+      }
+      const size_t carried = entry ? args(entry->id).size() : 0;
+      if (n.operands.size() != carried) {
+        error(n.id, n.kind, "carries " + std::to_string(carried) + " value(s) but takes " +
+                                std::to_string(n.operands.size()) + " initial value(s)");
+      }
+      if (n.numResults() != carried) {
+        error(n.id, n.kind, "has " + std::to_string(n.numResults()) + " result(s) for " +
+                                std::to_string(carried) + " carried value(s)");
+      }
+      size_t continues = 0;
+      for (const Node& c : m_.nodes) {
+        if (c.kind != "continue_if" || regionOf(c.scope) != n.id) continue;
+        ++continues;
+        if (c.operands.size() != carried + 1) {
+          error(c.id, c.kind, "supplies " + std::to_string(c.operands.size()) +
+                                  " value(s); expected a condition + " +
+                                  std::to_string(carried) + " carried value(s)");
+        }
+      }
+      if (continues == 0) error(n.id, n.kind, "the loop region has no continue_if");
+    }
+  }
+
+  // ---- visibility -----------------------------------------------------------
+
+  // The function or region op that owns `scope` (skipping a block).
+  NodeId regionOf(NodeId scope) const {
+    const Node* s = m_.find(scope);
+    return s && s->kind == "block" ? s->scope : scope;
+  }
+
+  struct Cfg {
+    std::vector<NodeId> nodes;  // [region (its entry), blocks...]
+    std::map<NodeId, size_t> index;
+    std::vector<std::vector<char>> dom;  // dom[x][y]: y dominates x
+  };
+
+  const Cfg& cfg(NodeId region) {
+    auto it = cfgs_.find(region);
+    if (it != cfgs_.end()) return it->second;
+    Cfg c;
+    c.nodes.push_back(region);
+    for (const NodeId ch : m_.childrenOf(region)) {
+      const Node* b = m_.find(ch);
+      if (b && b->kind == "block") c.nodes.push_back(ch);
+    }
+    const size_t n = c.nodes.size();
+    for (size_t i = 0; i < n; ++i) c.index[c.nodes[i]] = i;
+    std::vector<std::vector<size_t>> preds(n);
+    for (size_t i = 0; i < n; ++i) {
+      for (const Node* op : opsIn(c.nodes[i])) {
+        for (const Successor& s : op->successors) {
+          auto jt = c.index.find(s.block);
+          if (jt != c.index.end()) preds[jt->second].push_back(i);
+        }
+      }
+    }
+    c.dom.assign(n, std::vector<char>(n, 1));
+    c.dom[0].assign(n, 0);
+    c.dom[0][0] = 1;
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (size_t i = 1; i < n; ++i) {
+        std::vector<char> nd(n, 0);
+        if (!preds[i].empty()) {
+          nd = c.dom[preds[i][0]];
+          for (size_t k = 1; k < preds[i].size(); ++k) {
+            for (size_t x = 0; x < n; ++x) nd[x] = nd[x] && c.dom[preds[i][k]][x];
+          }
+        }
+        nd[i] = 1;
+        if (nd != c.dom[i]) {
+          c.dom[i] = nd;
+          changed = true;
+        }
+      }
+    }
+    return cfgs_.emplace(region, std::move(c)).first->second;
+  }
+
+  // Is `def` visible at a use inside scope `use_scope` (by the node `user`)?
+  // Strict program order applies only within one scope, and not for facts.
+  bool visible(const Node& def, NodeId use_scope, const Node* user) {
+    // Ancestor scope: lexically visible (inner scopes see outer values).
+    for (NodeId s = use_scope;; s = m_.find(s)->scope) {
+      if (s == def.scope) {
+        // Program order binds within one scope; an argument is visible to the
+        // whole body, but only to the arguments declared after it.
+        if (user && s == user->scope && (def.kind != "arg" || user->kind == "arg")) {
+          return order_[def.id] < order_[user->id];
+        }
+        return true;
+      }
+      if (s == kInvalidId || !m_.find(s)) break;
+    }
+    // CFG dominance: the def's block must dominate the use's block in the same region.
+    const Node* db = m_.find(def.scope);
+    if (!db || db->kind != "block") return false;
+    const NodeId region = db->scope;
+    NodeId ub = kInvalidId;
+    for (NodeId s = use_scope; s != kInvalidId;) {
+      const Node* sn = m_.find(s);
+      if (!sn) break;
+      if (sn->scope == region) {
+        ub = s;
+        break;
+      }
+      s = sn->scope;
+    }
+    if (ub == kInvalidId) return false;
+    const Cfg& c = cfg(region);
+    auto ui = c.index.find(ub);
+    auto di = c.index.find(db->id);
+    if (ui == c.index.end() || di == c.index.end()) return false;  // ub is an op: entry
+    return c.dom[ui->second][di->second] != 0;
+  }
+
+  void checkUse(const Node& user, NodeId scope, ValueRef v, const char* where,
+                bool ordered = true) {
+    const Node* def = m_.find(v.id);
+    if (!def) return;  // the parser reports unknown values
+    if (visible(*def, scope, ordered ? &user : nullptr)) return;
+    const Node* db = m_.find(def->scope);
+    std::string why = db && db->kind == "block"
+                          ? "is defined in " + label(db) + ", which does not dominate this use"
+                          : "is not visible here (defined later, or in another scope)";
+    std::string name = valueAtom(v);
+    if (v.port < def->names.size() && !def->names[v.port].empty()) name = "%" + def->names[v.port];
+    error(user.id, user.kind, std::string(where) + " " + name + " " + why);
+  }
+
+  void checkVisibility() {
+    for (const Node& n : m_.nodes) {
+      if (n.kind == "func" || n.kind == "module") continue;
+      for (const Operand& o : n.operands) {
+        std::vector<ValueRef> us;
+        o.uses(&us);
+        for (const ValueRef& v : us) checkUse(n, n.scope, v, "operand");
+      }
+      for (const Successor& s : n.successors) {
+        for (const ValueRef& v : s.args) checkUse(n, n.scope, v, "successor argument");
+      }
+      std::vector<ValueRef> tus;
+      for (const Type& t : n.types) typeUses(t, &tus);
+      for (const ValueRef& v : tus) {
+        if (v.id == n.id) {
+          error(n.id, n.kind, "a type cannot mention its own value");
+          continue;
+        }
+        checkUse(n, n.scope, v, "type dimension");
+      }
+    }
+    for (const Module::FactEntry& f : m_.facts) {
+      symbolic::ParsedFact pf;
+      std::string err;
+      if (!symbolic::parseFact(f.text, &pf, &err)) continue;
+      std::set<std::string> atoms;
+      symbolic::collectFactVars(pf, &atoms);
+      for (const std::string& a : atoms) {
+        ValueRef v;
+        if (!atomValue(a, &v)) continue;
+        const Node* def = m_.find(v.id);
+        if (def && !visible(*def, f.scope, nullptr)) {
+          error(f.scope, "fact", "fact mentions " + a + ", which is not visible in its scope");
+        }
+      }
+    }
+  }
+
+  const Module& m_;
+  const schema::Registry& reg_;
+  std::vector<Issue> out_;
+  std::map<std::string, NodeId> foreign_;
+  std::map<NodeId, size_t> order_;
+  std::map<NodeId, Cfg> cfgs_;
+};
 
 }  // namespace
 
 std::vector<Issue> checkModule(const Module& m, const schema::Registry& reg) {
-  std::vector<Issue> out;
-
-  auto has_trait = [&](const schema::Kind* k, const char* t) {
-    if (!k) return false;
-    for (const std::string& x : k->traits) {
-      if (x == t) return true;
-    }
-    return false;
-  };
-
-  // Port-kind check, driven by the declared port type.
-  auto portTypeOk = [&](const ValueRef& vr, const std::string& type,
-                        std::string* why) {
-    const Node* t = m.find(vr.id);
-    if (!t) return true;  // dangling reported by the parser
-    const schema::Kind* tk = reg.find(t->kind);
-    if (type == "block") {
-      if (!has_trait(tk, "block")) {
-        *why = "expects a block operand";
-        return false;
-      }
-      return true;
-    }
-    if (type == "edge") {
-      if (!has_trait(tk, "edge")) {
-        *why = "expects an edge operand";
-        return false;
-      }
-      return true;
-    }
-    if (type == "value") {
-      if (tk && !tk->results_value) {
-        *why = "expects a value-producing operand";
-        return false;
-      }
-      return true;
-    }
-    return true;
-  };
-
-  for (const Node& n : m.nodes) {
-    const schema::Kind* k = reg.find(n.kind);
-    if (!k) continue;  // foreign kinds are reported once, below
-
-    // Structure: counts and per-slot port kinds, proven from the declaration.
-    const size_t count = n.operands.size();
-    if (k->operands_specified) {
-      auto checkSlots = [&](auto slot_of) {
-        for (size_t i = 0; i < count; ++i) {
-          const size_t slot = slot_of(i);
-          if (slot >= k->operand_types.size()) continue;
-          const std::string& type = k->operand_types[slot];
-          if (type.empty() || type == "any") continue;
-          std::string why;
-          if (!portTypeOk(n.operands[i], type, &why)) {
-            out.push_back({true, n.id, n.kind,
-                           "operand " + std::to_string(i) + ": " + why});
-          }
-        }
-      };
-
-      if (k->operand_tuple_width > 0) {
-        const size_t w = k->operand_tuple_width;
-        if (count % w != 0) {
-          out.push_back({true, n.id, n.kind,
-                         "expects operands in groups of " + std::to_string(w) +
-                             " (" + describeOperands(*k) + "), got " +
-                             std::to_string(count)});
-        } else {
-          checkSlots([&](size_t i) { return i % w; });
-        }
-      } else if (k->operands_none) {
-        if (count != 0) {
-          out.push_back({true, n.id, n.kind,
-                         "expects no operands, got " + std::to_string(count)});
-        }
-      } else if (k->operands_variadic) {
-        if (count + 1 < k->operands.size()) {
-          out.push_back({true, n.id, n.kind,
-                         "expects " + describeOperands(*k) + ", got " +
-                             std::to_string(count)});
-        } else {
-          checkSlots([&](size_t i) {
-            const size_t last = k->operands.size() - 1;
-            return i >= last ? last : i;
-          });
-        }
-      } else {
-        if (count != k->operands.size()) {
-          out.push_back({true, n.id, n.kind,
-                         "expects " + describeOperands(*k) + ", got " +
-                             std::to_string(count)});
-        } else {
-          checkSlots([&](size_t i) { return i; });
-        }
-      }
-    }
-
-    // Attribute policy and types.
-    if (k->attr_policy == schema::Kind::AttrPolicy::None && !n.attrs.empty()) {
-      out.push_back({true, n.id, n.kind, "takes no attributes"});
-    }
-    if (k->attr_policy == schema::Kind::AttrPolicy::Closed) {
-      for (const auto& [key, val] : n.attrs) {
-        auto it = k->attrs.find(key);
-        if (it == k->attrs.end()) {
-          out.push_back({true, n.id, n.kind,
-                         "unknown attribute '" + key + "' for kind '" + n.kind +
-                             "'"});
-          continue;
-        }
-        std::string why;
-        if (!attrMatches(val, it->second, reg, &why)) {
-          out.push_back({true, n.id, n.kind,
-                         "attribute '" + key + "': " + why});
-        }
-      }
-      for (const auto& [key, type] : k->attrs) {
-        if (!n.attrs.count(key)) {
-          out.push_back({true, n.id, n.kind,
-                         "missing required attribute '" + key + "' (" + type +
-                             ")"});
-        }
-      }
-    }
-  }
-
-  // Kinds that produce no value may not appear as operands.
-  for (const Node& n : m.nodes) {
-    for (const ValueRef& vr : n.operands) {
-      const Node* t = m.find(vr.id);
-      if (!t) continue;
-      const schema::Kind* tk = reg.find(t->kind);
-      if (tk && !tk->results_value) {
-        out.push_back({true, n.id, n.kind,
-                       "operand references n" + std::to_string(t->id) + " ('" +
-                           t->kind + "') which produces no value"});
-      }
-    }
-  }
-
-  // Scoping: a reference must be visible either lexically (structured scopes:
-  // module/func/loop — through the scope chain) or by CFG dominance (block
-  // scopes). Crossings are allowed only on sanctioned roads declared by traits:
-  //   terminator -> blocks/edges (successor delivery)
-  //   edge       -> its target block (operand 0)
-  // There is no phi: a block's arguments, fed by edges, are the only way a value
-  // crosses a block boundary.
-  auto scope_reachable = [&](NodeId from_scope, NodeId target_scope) {
-    NodeId s = from_scope;
-    while (true) {
-      if (s == target_scope) return true;
-      if (s == kInvalidId) return false;
-      const Node* p = m.find(s);
-      s = p ? p->scope : kInvalidId;
-    }
-  };
-  auto enclosing_with_trait = [&](NodeId scope, const char* trait) -> NodeId {
-    NodeId s = scope;
-    while (s != kInvalidId) {
-      const Node* p = m.find(s);
-      if (!p) return kInvalidId;
-      if (has_trait(reg.find(p->kind), trait)) return s;
-      s = p->scope;
-    }
-    return kInvalidId;
-  };
-  auto enclosing_block = [&](NodeId scope) {
-    return enclosing_with_trait(scope, "block");
-  };
-  auto enclosing_scope_root = [&](NodeId scope) -> NodeId {
-    NodeId s = scope;
-    while (s != kInvalidId) {
-      const Node* p = m.find(s);
-      if (!p) return kInvalidId;
-      if (p->kind == "func" || p->kind == "module") return s;
-      s = p->scope;
-    }
-    return kInvalidId;
-  };
-  auto block_label = [&](NodeId id) {
-    const Node* b = m.find(id);
-    if (!b) return "n" + std::to_string(id);
-    return b->name.empty() ? ("n" + std::to_string(id)) : b->name;
-  };
-
-  // Dominator sets per function (entry = first block in program order), computed
-  // lazily. Only consulted for block-to-block value references.
-  struct DomInfo {
-    std::vector<NodeId> blocks;
-    std::map<NodeId, size_t> index;
-    std::vector<std::vector<char>> dom;  // dom[use][def]
-  };
-  std::map<NodeId, DomInfo> dom_cache;
-  auto compute_dominators = [&](NodeId func_scope) {
-    DomInfo info;
-    for (const NodeId cid : m.childrenOf(func_scope)) {
-      const Node* c = m.find(cid);
-      if (c && has_trait(reg.find(c->kind), "block")) info.blocks.push_back(cid);
-    }
-    const size_t n = info.blocks.size();
-    for (size_t i = 0; i < n; ++i) info.index[info.blocks[i]] = i;
-    std::vector<std::vector<size_t>> succ(n);
-    for (size_t i = 0; i < n; ++i) {
-      for (const NodeId cid : m.childrenOf(info.blocks[i])) {
-        const Node* c = m.find(cid);
-        if (!c) continue;
-        const schema::Kind* ck = reg.find(c->kind);
-        if (!has_trait(ck, "terminator") && !has_trait(ck, "edge")) continue;
-        for (const ValueRef& vr : c->operands) {
-          const Node* tt = m.find(vr.id);
-          if (!tt) continue;
-          NodeId target = kInvalidId;
-          if (has_trait(reg.find(tt->kind), "block")) {
-            target = tt->id;
-          } else if (has_trait(reg.find(tt->kind), "edge") &&
-                     !tt->operands.empty()) {
-            target = tt->operands[0].id;
-          }
-          auto it = info.index.find(target);
-          if (it != info.index.end()) succ[i].push_back(it->second);
-        }
-      }
-    }
-    info.dom.assign(n, std::vector<char>(n, 1));
-    if (n > 0) {
-      info.dom[0].assign(n, 0);
-      info.dom[0][0] = 1;
-      bool changed = true;
-      while (changed) {
-        changed = false;
-        for (size_t i = 1; i < n; ++i) {
-          std::vector<size_t> preds;
-          for (size_t j = 0; j < n; ++j) {
-            for (const size_t s : succ[j]) {
-              if (s == i) preds.push_back(j);
-            }
-          }
-          std::vector<char> nd;
-          if (preds.empty()) {
-            nd.assign(n, 0);
-            nd[i] = 1;
-          } else {
-            nd = info.dom[preds[0]];
-            for (size_t k = 1; k < preds.size(); ++k) {
-              for (size_t x = 0; x < n; ++x) {
-                nd[x] = static_cast<char>(nd[x] && info.dom[preds[k]][x]);
-              }
-            }
-            nd[i] = 1;
-          }
-          if (nd != info.dom[i]) {
-            info.dom[i] = nd;
-            changed = true;
-          }
-        }
-      }
-    }
-    return info;
-  };
-  auto dominates = [&](NodeId func_scope, NodeId def_block, NodeId use_block) {
-    if (def_block == use_block) return true;
-    auto it = dom_cache.find(func_scope);
-    if (it == dom_cache.end()) {
-      it = dom_cache.emplace(func_scope, compute_dominators(func_scope)).first;
-    }
-    const DomInfo& info = it->second;
-    const auto di = info.index.find(def_block);
-    const auto ui = info.index.find(use_block);
-    if (di == info.index.end() || ui == info.index.end()) return false;
-    return info.dom[ui->second][di->second] != 0;
-  };
-
-  for (const Node& n : m.nodes) {
-    const schema::Kind* nk = reg.find(n.kind);
-    const bool is_terminator = has_trait(nk, "terminator");
-    const bool is_edge = has_trait(nk, "edge");
-    for (size_t oi = 0; oi < n.operands.size(); ++oi) {
-      const Node* t = m.find(n.operands[oi].id);
-      if (!t) continue;
-      if (scope_reachable(n.scope, t->scope)) continue;
-      const schema::Kind* tk = reg.find(t->kind);
-      const bool sanctioned =
-          (is_terminator &&
-           (has_trait(tk, "block") || has_trait(tk, "edge"))) ||
-          (is_edge && oi == 0);
-      if (sanctioned) continue;
-
-      const NodeId ub = enclosing_block(n.scope);
-      const NodeId db = enclosing_block(t->scope);
-      if (ub != kInvalidId && db != kInvalidId) {
-        const NodeId f = enclosing_scope_root(ub);
-        if (f != kInvalidId && f == enclosing_scope_root(db) &&
-            dominates(f, db, ub)) {
-          continue;  // CFG dominance makes the definition visible here
-        }
-        out.push_back({true, n.id, n.kind,
-                       "operand n" + std::to_string(t->id) + " ('" + t->kind +
-                           "') is in block '" + block_label(db) +
-                           "' which does not dominate this use"});
-        continue;
-      }
-      out.push_back({true, n.id, n.kind,
-                     "operand n" + std::to_string(t->id) + " ('" + t->kind +
-                         "') crosses a scope boundary; pass values through "
-                         "block parameters or edges"});
-    }
-  }
-
-  // Edge arity (RELATIONAL): passed values must match the target block's
-  // parameters. Structure and target typing are already proven generically by
-  // `operands: target: block, passed: value*`.
-  for (const Node& n : m.nodes) {
-    const schema::Kind* k = reg.find(n.kind);
-    if (!has_trait(k, "edge")) continue;
-    if (n.operands.empty()) continue;  // structure check reports this
-    const Node* target = m.find(n.operands[0].id);
-    if (!target) continue;
-    size_t params = 0;
-    for (const Node& c : m.nodes) {
-      if (c.scope == target->id && has_trait(reg.find(c.kind), "arg")) ++params;
-    }
-    const size_t passed = n.operands.size() - 1;
-    if (passed != params) {
-      const std::string label = target->name.empty()
-                                    ? ("n" + std::to_string(target->id))
-                                    : target->name;
-      out.push_back({true, n.id, n.kind,
-                     "passes " + std::to_string(passed) +
-                         " value(s) to block '" + label + "' which takes " +
-                         std::to_string(params) + " parameter(s)"});
-    }
-  }
-
-  // Edge values are branch payloads: consumed by exactly one terminator, and
-  // never by ordinary ops. Purely local, no CFG analysis needed.
-  for (const Node& n : m.nodes) {
-    if (!has_trait(reg.find(n.kind), "edge")) continue;
-    size_t uses = 0;
-    for (const Node& u : m.nodes) {
-      const schema::Kind* uk = reg.find(u.kind);
-      for (const ValueRef& vr : u.operands) {
-        if (vr.id != n.id) continue;
-        ++uses;
-        if (!has_trait(uk, "terminator")) {
-          out.push_back({true, u.id, u.kind,
-                         "edge n" + std::to_string(n.id) +
-                             " may only be consumed by a terminator"});
-        }
-      }
-    }
-    if (uses == 0) {
-      out.push_back({false, n.id, n.kind, "edge value is never consumed"});
-    } else if (uses > 1) {
-      out.push_back({true, n.id, n.kind,
-                     "edge value is consumed by " + std::to_string(uses) +
-                         " sites (must be exactly one terminator)"});
-    }
-  }
-
-  // Simple structured loops (RELATIONAL): a `loop` scope carries N values as its
-  // parameters, takes N initial values as operands, and has exactly one
-  // `loop.yield` supplying (condition + N next values). Exits are ports.
-  for (const Node& n : m.nodes) {
-    if (!has_trait(reg.find(n.kind), "loop")) continue;
-    size_t params = 0;
-    for (const Node& c : m.nodes) {
-      if (c.scope == n.id && has_trait(reg.find(c.kind), "arg")) ++params;
-    }
-    if (n.operands.size() != params) {
-      out.push_back({true, n.id, n.kind,
-                     "loop carries " + std::to_string(params) +
-                         " parameter(s) but takes " +
-                         std::to_string(n.operands.size()) +
-                         " initial value(s)"});
-    }
-    const Node* yield = nullptr;
-    size_t yields = 0;
-    for (const Node& c : m.nodes) {
-      if (c.scope == n.id && has_trait(reg.find(c.kind), "loop.yield")) {
-        ++yields;
-        yield = &c;
-      }
-    }
-    if (yields != 1) {
-      out.push_back({true, n.id, n.kind,
-                     "loop body must contain exactly one loop.yield (found " +
-                         std::to_string(yields) + ")"});
-    } else if (yield->operands.size() != params + 1) {
-      out.push_back({true, yield->id, yield->kind,
-                     "loop.yield supplies " +
-                         std::to_string(yield->operands.size()) +
-                         " value(s); expected condition + " +
-                         std::to_string(params) + " carried value(s)"});
-    }
-  }
-
-  // Foreign vocabulary: reported once per kind, as a warning.
-  std::map<std::string, NodeId> unknown;
-  for (const Node& n : m.nodes) {
-    if (!reg.find(n.kind)) unknown.emplace(n.kind, n.id);
-  }
-  for (const auto& [kind, id] : unknown) {
-    out.push_back({false, id, kind, "unknown kind '" + kind +
-                                        "' (foreign vocabulary)"});
-  }
-
-  return out;
+  return Checker(m, reg).run();
 }
 
 bool hasErrors(const std::vector<Issue>& issues) {
-  for (const Issue& i : issues) {
-    if (i.error) return true;
-  }
-  return false;
+  return std::any_of(issues.begin(), issues.end(), [](const Issue& i) { return i.error; });
 }
 
-}  // namespace bridgeir::verify
+}  // namespace brrr::verify

@@ -11,7 +11,7 @@
 
 #include "symbolic/symbolic.h"
 
-namespace bridgeir::connectors {
+namespace brrr::connectors {
 
 using symbolic::Expr;
 using symbolic::Solver;
@@ -38,8 +38,9 @@ class Hub {
   Answer askSympyEqual(const Expr& a, const Expr& b);
 
   bool sympy_available_ = false;
+  std::string python_;  // the interpreter that imports sympy
   int external_calls_ = 0;
   std::map<std::string, Answer> cache_;
 };
 
-}  // namespace bridgeir::connectors
+}  // namespace brrr::connectors

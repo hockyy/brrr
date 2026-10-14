@@ -1,12 +1,14 @@
-# Mapping of a real torch.fx symbolic_trace graph (torch 2.13):
+# Mapping of a torch.fx symbolic_trace graph (torch 2.13):
 #   forward(x, bias): return relu(matmul(x, w) + bias)
-# FX node names become BridgeIR names; callable targets become data.
-func @mlp(n1) {
-  n2 x = placeholder name="x" type="Tensor"
-  n3 bias = placeholder name="bias" type="Tensor"
-  n4 w = get_attr name="w" module="@M.w"
-  n5 mm = call_function target="torch.matmul" x w
-  n6 sum = call_function target="operator.add" mm bias
-  n7 act = call_function target="torch.relu" sum
-  n8 = output act
+#
+# Placeholders become arguments, FX node names become value names, and callable
+# targets become attributes. FX tensors carry no static types, so none are
+# written: the checker stays out of the way (gradual typing) until a pass or an
+# agent adds them.
+func @mlp(%x, %bias) {
+  %w = fx.get_attr target="w"
+  %mm = fx.call_function %x, %w target="torch.matmul"
+  %sum = fx.call_function %mm, %bias target="operator.add"
+  %act = fx.call_function %sum target="torch.relu"
+  return %act
 }

@@ -1,0 +1,6 @@
+# expect: operands have different types: i32 and u16
+# No implicit promotion between machine integers: write `cast %b to=i32` first.
+func @f(%a: i32, %b: u16) {
+  %c = add %a, %b
+  return
+}

@@ -1,18 +1,18 @@
-# IR landscape — research notes (for BridgeIR)
+# IR landscape — research notes (for Brrr)
 
 Compiled 2026-10-13 from model knowledge (web search unavailable in this session).
 Citation details marked **(verify)**. Purpose: (a) seed the paper's background/related
 work, (b) extract design lessons for an IR made for agents.
 
 Reading guide: families → compact entries (form, notable design choices, lesson for
-BridgeIR). Then: cross-cutting matrix, ranked lessons, gap analysis, agent-era
+Brrr). Then: cross-cutting matrix, ranked lessons, gap analysis, agent-era
 systems, citation candidates.
 
 A key theoretical fact up front: the major forms are *expressiveness-equivalent* —
 SSA ⇄ CPS ⇄ ANF ⇄ sea-of-nodes can be translated into each other
 **(verify: Kelsey'95 / Appel'98)**. So choosing a form is about *affordances*
 (identity, verification, provenance, token cost), not about what can be expressed.
-That is exactly the axis BridgeIR competes on.
+That is exactly the axis Brrr competes on.
 
 ---
 
@@ -144,7 +144,7 @@ schedule authoring is a specialist act — a natural agent task.*
 **ONNX** — **ops defined as data schemas** (versioned, type constraints, shape
 inference); graph nodes reference values **by name**. **(verify: ONNX spec)**
 → *Lesson: the biggest "definitions are data" precedent — but with no transformation
-engine and no provenance. That is precisely the other half BridgeIR builds.*
+engine and no provenance. That is precisely the other half Brrr builds.*
 
 **IREE / Glow / nGraph** — deployment-oriented ML stacks (flow/hal/stream-style
 dialects; latency/size budgets). → *Lesson: deployment constraints shape layering.*
@@ -232,7 +232,7 @@ relations; incremental maintenance research to borrow from.*
 
 ---
 
-## 7. Design lessons for BridgeIR (ranked)
+## 7. Design lessons for Brrr (ranked)
 
 1. **The multi-form chain is universal** — build a framework for chains (per-form
    schemas), not "one IR to rule them all". (GHC, GCC, Rust, Swift, TVM, V8)
@@ -242,7 +242,7 @@ relations; incremental maintenance research to borrow from.*
    (ONNX, TF GraphDef) name things. Our stable IDs + rename journal is a genuine
    novelty, especially with deltas.
 4. **Definitions-as-data works** (ONNX schemas, TVM runtime registry), but nobody
-   pairs it with transformation + verification + provenance. BridgeIR = that pair.
+   pairs it with transformation + verification + provenance. Brrr = that pair.
 5. **Verification precedent is strong** (wasm validation, eBPF verifier, SPIR-V,
    JVM bytecode verifier) — but all static/load-time. Ours: transactional commits +
    invariant gates at checkpoints.
@@ -281,7 +281,7 @@ relations; incremental maintenance research to borrow from.*
 - Compiler-R1 (2025): RL agentic compiler auto-tuning. **(verify details)**
 
 Pattern: every system points agents at *human* IRs (LLVM IR, Triton, CUDA). None
-designs the IR itself for agent consumption. BridgeIR is the first mover on the IR
+designs the IR itself for agent consumption. Brrr is the first mover on the IR
 axis, not the agent-tooling axis.
 
 ## 10. Citation candidates (verify before adding to refs.bib)

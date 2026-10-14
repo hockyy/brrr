@@ -1,0 +1,6 @@
+# expect: cannot prove %k == %m
+func @f(%m: index, %k: index, %n: index,
+        %a: tensor<[%m, %k], f32>, %b: tensor<[%m, %n], f32>) {
+  %c = matmul %a, %b
+  return
+}

@@ -1,0 +1,6 @@
+# expect: cannot prove %a + 1 == %b
+func @f(%a: i32, %x: tensor<[%a + 1], f32>) {
+  %b = add %a, 1
+  %y = reshape %x : tensor<[%b], f32>
+  return
+}

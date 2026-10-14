@@ -1,14 +1,14 @@
-# 03 — Vocabulary is declared data, not code. Ports are named and typed
-# (value | block | edge); attrs are typed (int, float, str, sym, dtype, expr,
-# dims); results have a policy; scalars are declared primitives.
+# 03 — Vocabulary is schema data, not C++. `brrr schema` prints it.
 #
-#   bridgeir schema                                  # scalars + kinds + traits
-#   bridgeir schema --core-only                       # core module alone
-#   bridgeir check  src/showcase/03_vocabulary.br
+#   brrr schema
+#   brrr check src/showcase/03_vocabulary.br
 #
-# A bad shape is a load error, not a pass crash: try editing `in` to "n +".
-func @typed_load(n1) {
-  n2 x = load dtype=@f16 shape="n, 128"
-  n3 r = reshape x in="n, 128" out="n * 2, 64"
-  n4 = func.return r
+# `icmp`'s `pred` is declared `enum(eq|ne|lt|le|gt|ge)`: change pred=gt to
+# pred=gtt and `check` names the allowed values. A kind no schema declares is
+# foreign vocabulary: accepted, reported once as a warning, never silently checked.
+func @pick(%a: i32, %b: i32) -> i32 {
+  %c = icmp %a, %b pred=gt
+  %m = select %c, %a, %b
+  %w = mytarget.tune %m tile=[32, 32] mode=fast    # foreign: a warning, not an error
+  return %m
 }

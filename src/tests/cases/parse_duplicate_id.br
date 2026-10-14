@@ -1,0 +1,4 @@
+# expect: duplicate node id n2
+n1 func @f(n2 %x: index) -> index {
+  n2 return %x
+}

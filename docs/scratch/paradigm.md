@@ -1,5 +1,9 @@
 # Paradigm and encodings: procedures, objects, primitives, mini-C++
 
+> **2026-10-14:** written for the v0 text format (`nN name = kind ...`, edge and
+> param nodes). The current language is [`syntax-v1.md`](syntax-v1.md); the
+> reasoning here still stands where v1 does not say otherwise.
+
 Status: recorded 2026-10-13, refined over the session. Answers four questions that
 shaped the design.
 
@@ -65,7 +69,7 @@ scalar i32 { domain: int bits: 32 }
 
 Consequences: `dtype=@f8` is rejected ("unknown scalar"); inference can use domains;
 the symbolic layer can later range-check constants against `bits`/`domain`; and
-`bridgeir schema` prints the vocabulary. Primitives are part of the language's
+`brrr schema` prints the vocabulary. Primitives are part of the language's
 definition in exactly the same way kinds are.
 
 ## Mini-C++ as the surface?
@@ -99,7 +103,7 @@ Rules of engagement, so it stays an asset:
 
 The architecture, made literal:
 
-- **Main head** — the `bridgeir` CLI: a thin shell.
+- **Main head** — the `brrr` CLI: a thin shell.
 - **Parser** — text → terms (canonical `.br`, schemas, facts, `#include`).
 - **Runner / executor** — procedures over modules: passes, inference, the solver,
   connectors.

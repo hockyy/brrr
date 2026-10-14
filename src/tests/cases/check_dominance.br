@@ -1,0 +1,11 @@
+# expect: does not dominate this use
+func @f(%c: i1, %x: index) -> index {
+  cond_br %c, ^left, ^right
+^left:
+  %y = add %x, 1
+  br ^join
+^right:
+  br ^join
+^join:
+  return %y
+}
