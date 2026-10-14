@@ -9,7 +9,10 @@
 //     cond_br %more, ^k_loop(%k2, %sum), ^done(%sum)
 //
 // With `contract=true`, the add and the float `mul` feeding it also get
-// contract=true, so `acc + x * w` can become one FMA. Both permissions change
+// contract=true, so `acc + x * w` can become one FMA. `reassoc=false` grants
+// contract alone: right for loops that vectorize across independent
+// accumulators (tile-linear form=outer), where reordering the sum would steer
+// the vectorizer the wrong way. Both permissions change
 // rounding in the last bits: that is the agent's call, recorded per op in the
 // journal, and checked against a reference (examples/build.py compares with torch).
 #include "passes/pass.h"
@@ -25,8 +28,12 @@ bool isFloat(const schema::Registry& reg, const Type& t) {
 }
 
 bool allowReassoc(Module& m, const passes::Context& ctx, std::string*) {
-  const auto opt = ctx.options.find("contract");
-  const bool contract = opt != ctx.options.end() && opt->second == "true";
+  auto flag = [&](const char* key, bool fallback) {
+    const auto it = ctx.options.find(key);
+    return it == ctx.options.end() ? fallback : it->second == "true";
+  };
+  const bool reassoc = flag("reassoc", true);    // reorder the sum: vectorize along it
+  const bool contract = flag("contract", false);  // fuse a * b + c into an FMA
   sema::Sema sema(m, ctx.reg);
 
   // Every value a branch passes to block argument i of block b.
@@ -73,7 +80,7 @@ bool allowReassoc(Module& m, const passes::Context& ctx, std::string*) {
   for (const auto& [id, why] : grants) {
     Node* n = m.find(id);
     std::string flags;
-    if (n->kind == "add") {
+    if (n->kind == "add" && reassoc) {
       n->attrs["reassoc"] = AttrValue::fromBool(true);
       flags = "reassoc";
     }

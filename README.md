@@ -175,6 +175,7 @@ $ brrr show r1 > special.br && brrr to-llvm special.br > special.ll
 $ clang -O3 -march=native special.ll examples/harness.c -o special
 $ python examples/build.py               # kernel.br -> lower-aten -> to-llvm -> clang -> compare with torch
 $ python examples/build.py --passes "lower-aten,allow-reassoc"   # the same, with one niching step
+$ python examples/build.py --passes "tile-linear rows=4 cols=2,lower-aten,allow-reassoc contract=true"
 ```
 
 ## From PyTorch to a binary: where it stands
@@ -182,11 +183,11 @@ $ python examples/build.py --passes "lower-aten,allow-reassoc"   # the same, wit
 `python examples/build.py --passes "<pipeline>"` on this machine (Arrow Lake,
 AVX2 + FMA). Every row matches torch's output within 6e-7:
 
-| tokens | `lower-aten` (naive loops) | `lower-aten,allow-reassoc` | torch (all threads) | torch (1 thread) |
-|---|---|---|---|---|
-| 32 | 0.27 ms | **0.056 ms** | 0.06 ms | 0.030 ms |
-| 512 | 4.3 ms | **0.70 ms** | 0.10 ms | 0.27 ms |
-| 4096 | 34.5 ms | **6.3 ms** | 0.41 ms | 2.3 ms |
+| tokens | `lower-aten` (naive loops) | `+allow-reassoc` | `tile-linear rows=4 cols=2,` ... `contract=true` | torch (all threads) | torch (1 thread) |
+|---|---|---|---|---|---|
+| 32 | 0.28 ms | 0.052 ms | **0.038 ms** | 0.078 ms | 0.028 ms |
+| 512 | 4.2 ms | 0.85 ms | **0.52 ms** | 0.090 ms | 0.27 ms |
+| 4096 | 34.2 ms | 6.5 ms | **3.85 ms** | 0.30 ms | 2.3 ms |
 
 **The first niching step was one recorded permission: `allow-reassoc`.** Float
 addition isn't associative, because `(a + b) + c` and `a + (b + c)` can round
@@ -200,20 +201,32 @@ torch, whose own matmul doesn't sum in order either. The permission is an op
 attribute, so it is visible in the IR, and each grant is logged in the stage
 record by node id.
 
-What didn't help (measured, so you don't have to): `contract=true` (fusing
-`a * b + c` into FMA) shows no consistent change. Neither does specializing to
-512 tokens with a guard (step 4 above). The loop is now limited by loads: every
-multiply-add reads one `x` and one `w`.
+**The second was a schedule: `tile-linear`** ([#25](https://github.com/hockyy/brrr/issues/25)).
+The loop was now limited by loads, since every multiply-add read one `x` and one
+`w`. `tile-linear rows=R cols=C` asks the solver whether the tile divides the
+layer (`8 * %t mod 4 == 0`: Yes, for every `%t`) and records the tile on the op.
+`lower-aten` then computes an R x C block of outputs per k loop, so each loaded
+value feeds several multiply-adds. With the loads amortized, `contract=true`
+(FMA) finally pays. A tile that need not divide is refused, and the refusal
+names the question (`rows=6 needs 8 * %t mod 6 == 0`), so the agent knows which
+fact or divisor to try. `form=outer` transposes the weights once and vectorizes
+across columns instead; every output is then summed in order (no `reassoc`), and
+it is close behind (3.9 ms at 4096 tokens).
 
-Still about 2.7× slower than torch on one thread. Next, each step a run an agent
-can branch and measure:
+**What's left is memory, not arithmetic.** At 4096 tokens the kernel allocates
+9 MB of intermediates on every call, and the OS hands back fresh pages each
+time. With the very same binary and an allocator that reuses buffers between
+calls, it runs 0.026 / 0.27 / 2.30 ms: level with torch on one thread. The
+inner loop is already a textbook 4x16 FMA micro-kernel. Next, each step a run an
+agent can branch and measure:
 
-- **Register-block tiling** of the linear loops ([#25](https://github.com/hockyy/brrr/issues/25)):
-  reuse each loaded value across several rows and columns, the fix for a
-  load-bound loop. The kernel's `8 * %t` makes 2/4/8-row tiles remainder-free,
-  and the solver proves it.
+- **No per-call heap traffic** ([#28](https://github.com/hockyy/brrr/issues/28)):
+  fuse relu and the residual add into the linear epilogues, run the two layers
+  row block by row block so the 256-wide hidden activations never leave L1, and
+  give the caller a workspace instead of `malloc`.
 - **Facts as LLVM hints** ([#26](https://github.com/hockyy/brrr/issues/26)): what
   Brrr proved becomes `noalias`, `llvm.assume` and `align`.
+- **Threads**, to meet torch's all-thread numbers at 512+ tokens.
 
 ## Running a pipeline: the reference
 
@@ -277,11 +290,11 @@ Prototype. What works and is tested (four `ctest` suites, ~200 CLI checks):
   (`brrr to-llvm` + clang), checked against torch ([codegen notes](docs/scratch/codegen.md));
 - passes, one self-registering C++ file each: `infer-shapes`, `fold-constants`,
   `fold-reshape`, `insert-guards`, `reconcile-casts`, `dce`, `canonicalize`,
-  `lower-aten`, `allow-reassoc`;
+  `lower-aten`, `allow-reassoc`, `tile-linear`;
 - the run store: `run`, `resume`, `branch`, `show`, `runs`, with hand edits as
   recorded stages and rollback of any stage that fails verification.
 
-Not yet: most niching (so far only `allow-reassoc`, see above), a
+Not yet: most niching (so far `allow-reassoc` and `tile-linear`, see above), a
 rewrite-pattern engine, call ops and preconditions at call sites, `min`/`max`
 in expressions, and vector types. The roadmap is
 [hockyy/brrr#1](https://github.com/hockyy/brrr/issues/1).
