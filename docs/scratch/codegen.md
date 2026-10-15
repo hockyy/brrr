@@ -91,8 +91,8 @@ float they are refused, so they can never be a silent no-op.
 The pass `allow-reassoc` grants `reassoc` to loop reductions. A reduction is a
 float add that reads a block argument and whose sum a branch passes back into
 that argument. With `contract=true`, the add and the multiply feeding it also get
-`contract`. Each grant is journaled, so the stage record says which ops may round
-differently and why.
+`contract`; `reassoc=false contract=true` grants FMA alone. Each grant is
+journaled, so the stage record says which ops may round differently and why.
 
 | pipeline, 4096 tokens | ms | |
 |---|---|---|
@@ -102,6 +102,53 @@ differently and why.
 
 Every variant still matches torch within 6e-7. The next step is register-block
 tiling (#25), which reuses loaded values.
+
+## Niching 2: `tile-linear`
+
+`tile-linear rows=R cols=C [form=inner|outer]` schedules every `aten.linear`. It
+is a schedule, not a rewrite: it asks the solver `aligned(B, R)` and
+`aligned(N, C)` under the facts in scope, and on two Yes answers it sets the
+attributes `rows`, `cols`, `form` on the op and journals the proof. Anything but
+Yes refuses the stage and names the question (`rows=6 needs 8 * %t mod 6 == 0,
+and the solver says Unknown`). There are no remainder loops: the agent picks a
+divisor, or adds the fact that makes one legal.
+
+`lower-aten` realizes the tile. Per R x C block of outputs (loops `_ib`, `_nb`),
+R * C accumulators start at the bias and are carried through one k loop, then
+stored. Tile indices are expressions (`4 * %linear_ib + 3`), so the bounds proof
+for every load and store goes through the solver like any other.
+
+- `form=inner` (default): each accumulator is a dot product along k. It
+  vectorizes only with `reassoc`, and each block ends with R * C horizontal sums.
+- `form=outer`: the weights are transposed once per call into `w_t[k, n]` (loops
+  `_tk`, `_tn`). For each k, a row's C outputs read C contiguous weights, so they
+  vectorize across columns with a broadcast `x`. Every output is still summed in
+  k order: exact rounding, no `reassoc`. With `contract` alone, clang emits the
+  classic 4x16 AVX2 micro-kernel (two `w_t` loads, four broadcasts, eight FMAs).
+  `reassoc` hurts this form (9.5 ms at 4096 tokens): it steers the vectorizer
+  back to k.
+
+| pipeline (ms at 32 / 512 / 4096 tokens) | 32 | 512 | 4096 |
+|---|---|---|---|
+| `lower-aten,allow-reassoc contract=true` | 0.052 | 0.85 | 6.5 |
+| `tile-linear rows=4 cols=2,lower-aten,allow-reassoc` | 0.043 | 0.59 | 4.47 |
+| `tile-linear rows=4 cols=2,lower-aten,allow-reassoc contract=true` | **0.038** | **0.52** | **3.85** |
+| `tile-linear rows=4 cols=16 form=outer,lower-aten` | 0.088 | 0.57 | 4.03 |
+| `... form=outer,lower-aten,allow-reassoc reassoc=false contract=true` | 0.087 | 0.58 | 3.93 |
+| torch, one thread | 0.028 | 0.27 | 2.31 |
+
+The sweep also covered 4x4, 4x8, 8x8, 8x16 and 2x16. The bigger tiles run out
+of the 16 ymm registers, and 6x16 (the textbook AVX2 shape) is refused because 6
+need not divide `8 * %t`. The outer form loses at 32 tokens because of the
+per-call transpose (weights are arguments, so there is no "once").
+
+**The gap to torch is allocation.** `lower-aten` allocates every intermediate
+per call: 9 MB at 4096 tokens (the fc1 output, the relu output, the fc2 output).
+On Windows, frees that size go back to the OS, so each call page-faults all of it
+in again. Relinking the same `.ll` with a malloc that reuses buffers between
+calls gives 0.026 / 0.27 / 2.30 ms, level with torch on one thread. That is the
+next niche (#28): epilogue fusion, row-block fusion of the two layers, and a
+caller-provided workspace.
 
 ## Not yet
 

@@ -145,15 +145,55 @@ contains "allow-reassoc: a non-reduction float add is left alone" "%add_v = add 
   cat "$TMP/reassoc_k.br"
 contains "to-llvm: reassoc and contract become fast-math flags" "fadd reassoc contract float" \
   "$BIN" to-llvm "$TMP/reassoc_k.br"
+RC="$TMP/contract_only"
+"$BIN" run "$TORCH_EX/kernel.br" --passes="lower-aten,allow-reassoc reassoc=false contract=true" \
+  --schemas="$TORCH_EX/aten.bs" "--store=$RC" >/dev/null 2>&1
+contains "allow-reassoc reassoc=false: grants contract alone" ": contract (reduction into" \
+  "$BIN" show r1@2 --record "--store=$RC"
+"$BIN" show r1 "--store=$RC" > "$TMP/contract_k.br"
+if grep -q "reassoc=true" "$TMP/contract_k.br"; then
+  flunk "allow-reassoc reassoc=false: no add is reordered" "$(grep -m3 reassoc=true "$TMP/contract_k.br")"
+else pass "allow-reassoc reassoc=false: no add is reordered"; fi
 printf 'func @f(%%a: index, %%b: index) -> index {\n  %%c = add %%a, %%b reassoc=true\n  return %%c\n}\n' > "$TMP/reassoc_int.br"
 contains "reassoc on integer arithmetic is refused" "reassoc applies to float arithmetic, not index" \
   "$BIN" check "$TMP/reassoc_int.br"
+
+# Niching 2: tile-linear register-blocks aten.linear, once the solver proves the
+# tile divides the dims.
+TL="$TMP/tile"
+contains "tile-linear: a dividing tile is scheduled" "tile-linear cols=16 form=outer rows=4  ok" \
+  "$BIN" run "$TORCH_EX/kernel.br" --passes="tile-linear rows=4 cols=16 form=outer,lower-aten" \
+  --schemas="$TORCH_EX/aten.bs" "--store=$TL"
+contains "tile-linear: the record states the divisibility proof" "8 * %t mod 4 == 0 and 256 mod 16 == 0: proven" \
+  "$BIN" show r1@1 --record "--store=$TL"
+"$BIN" show r1 "--store=$TL" > "$TMP/tiled_k.br"
+contains "tile-linear: every tiled load and store is proven in bounds" "errors: 0, warnings: 0" \
+  "$BIN" check "$TMP/tiled_k.br"
+contains "tile-linear: tile indices are expressions" "load %fc1_bias, [16 * %linear_nb + 15] : f32" \
+  cat "$TMP/tiled_k.br"
+contains "tile-linear form=outer: weights are transposed once" "store %linear_wv, %linear_wt, [%linear_tk, %linear_tn]" \
+  cat "$TMP/tiled_k.br"
+contains "tile-linear: a tile that need not divide B is refused, naming the question" \
+  "rows=6 needs 8 * %t mod 6 == 0, and the solver says" \
+  "$BIN" run "$TORCH_EX/kernel.br" --passes="tile-linear rows=6 cols=16,lower-aten" \
+  --schemas="$TORCH_EX/aten.bs" "--store=$TMP/tile6"
+contains "tile-linear: an unknown form is refused" "form must be inner or outer, got 'sideways'" \
+  "$BIN" run "$TORCH_EX/kernel.br" --passes="tile-linear form=sideways" \
+  --schemas="$TORCH_EX/aten.bs" "--store=$TMP/tile_bad"
+
 if [ -n "$TORCH_PY" ] && command -v clang >/dev/null 2>&1; then
   contains "end to end: the compiled PyTorch kernel matches torch" "match: torch and brrr agree" \
     "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e"
   contains "end to end: with allow-reassoc it still matches torch" "match: torch and brrr agree" \
     "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" --passes "lower-aten,allow-reassoc contract=true" \
     --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e_reassoc"
+  contains "end to end: tiled (inner, reassoc) still matches torch" "match: torch and brrr agree" \
+    "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" --passes "tile-linear rows=4 cols=2,lower-aten,allow-reassoc" \
+    --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e_tile_inner"
+  contains "end to end: tiled (outer, contract) still matches torch" "match: torch and brrr agree" \
+    "$TORCH_PY" -I "$TORCH_EX/build.py" --brrr "$BIN" \
+    --passes "tile-linear rows=4 cols=16 form=outer,lower-aten,allow-reassoc reassoc=false contract=true" \
+    --t 2,16 --reps 1 --no-torch-timing --work "$TMP/e2e_tile_outer"
 else
   echo "skip: end to end needs python with torch and clang"
 fi

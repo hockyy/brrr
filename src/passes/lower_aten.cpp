@@ -9,6 +9,15 @@
 //   ops         aten.linear: for i < B, n < N: acc = b[n]; for k < K: acc +=
 //               x[i, k] * w[n, k]; out[i, n] = acc.   aten.relu, aten.add:
 //               elementwise loops over every dim
+//   tiles       an aten.linear scheduled by tile-linear (attrs rows=R cols=C) is
+//               register-blocked: per R x C tile of outputs, one k loop carries
+//               R * C accumulators, and each loaded x[i, k] / w[n, k] is reused
+//               C / R times. Tile indices are expressions (R * %ib + r).
+//               form=inner (default): each output is a dot product along k
+//               (vectorizes along k only with reassoc). form=outer: the weights
+//               are transposed once into w_t[k, n], and the C outputs of a row
+//               read C contiguous weights per k, so they vectorize across
+//               columns, every output still summed in order (exact rounding).
 //
 // Every loop header states its range as a fact (Builder::countedLoop), so every
 // load and store is proven in bounds. An ATen op without a lowering fails the
@@ -33,6 +42,24 @@ Operand at(const std::vector<ValueRef>& ivs) {
   std::vector<Expr> es;
   for (const ValueRef& v : ivs) es.push_back(atom(v));
   return Operand::ofList(std::move(es));
+}
+
+// t * block + r: the r-th index inside tile `block` of size t.
+Expr tileIndex(ValueRef block, int64_t t, int64_t r) {
+  Expr e = t == 1 ? atom(block) : ExprTerm::mul({ExprTerm::constant(t), atom(block)});
+  return r ? ExprTerm::add({e, ExprTerm::constant(r)}) : e;
+}
+
+// How many tiles of size t fit in d (t divides d: tile-linear proved it).
+Expr tiles(const Expr& d, int64_t t) {
+  if (t == 1) return d;
+  if (d->kind == ExprTerm::Kind::Const) return ExprTerm::constant(d->c / t);
+  return ExprTerm::div(ExprTerm::Kind::FloorDiv, d, t);
+}
+
+int64_t intAttr(const Node& n, const char* key, int64_t fallback) {
+  const AttrValue* a = n.findAttr(key);
+  return a && a->kind == AttrValue::Kind::Int && a->i > 0 ? a->i : fallback;
 }
 
 class Lowering {
@@ -86,7 +113,7 @@ class Lowering {
 
     // Destinations: the returned value is written into the output; the rest get allocs.
     b_.at(func_);
-    std::vector<ValueRef> temps;
+    std::vector<ValueRef>& temps = temps_;
     for (NodeId id : ops) {
       const ValueRef v{id, 0};
       if (v == result && output_.id) {
@@ -128,8 +155,82 @@ class Lowering {
     return o.kind == Operand::Kind::Value ? buffer_.at(o.value) : ValueRef{};
   }
 
+  // A register-blocked linear layer: per tile (ib, nb), R * C accumulators
+  // start at the bias, one k loop updates them all, and they are stored at the end.
+  void linearTiled(const Node& n, std::map<ValueRef, Type>& types, int64_t R, int64_t C) {
+    const ValueRef x = bufferFor(n.operands[0]), w = bufferFor(n.operands[1]),
+                   bias = bufferFor(n.operands[2]), out = buffer_.at({n.id, 0});
+    const Type xt = types[n.operands[0].value], wt = types[n.operands[1].value];
+    const Type elem = Builder::scalar(xt->elem);
+    const std::string base = n.names.empty() || n.names[0].empty() ? "linear" : n.names[0];
+    const AttrValue* form = n.findAttr("form");
+    const bool outer = form && form->kind == AttrValue::Kind::Str && form->s == "outer";
+    ValueRef wsrc = w;  // what the k loop reads: w[n, k], or w_t[k, n] for form=outer
+    if (outer) {
+      const Type wtt = std::make_shared<TypeTerm>(TypeTerm{"buf", true, {wt->dims[1], wt->dims[0]}, wt->elem});
+      wsrc = b_.op("alloc", {}, wtt, base + "_wt");
+      temps_.push_back(wsrc);
+      b_.countedLoop(base + "_tk", wt->dims[1], {}, [&](ValueRef k, const std::vector<ValueRef>&) {
+        b_.countedLoop(base + "_tn", wt->dims[0], {}, [&](ValueRef j, const std::vector<ValueRef>&) {
+          const ValueRef v = b_.op("load", {Operand::ofValue(w), at({j, k})}, elem, base + "_wv");
+          b_.effect("store", {Operand::ofValue(v), Operand::ofValue(wsrc), at({k, j})});
+          return std::vector<ValueRef>{};
+        });
+        return std::vector<ValueRef>{};
+      });
+    }
+    b_.countedLoop(base + "_ib", tiles(xt->dims[0], R), {}, [&](ValueRef ib, const std::vector<ValueRef>&) {
+      b_.countedLoop(base + "_nb", tiles(wt->dims[0], C), {}, [&](ValueRef nb, const std::vector<ValueRef>&) {
+        std::vector<ValueRef> bvals;
+        for (int64_t c = 0; c < C; ++c) {
+          bvals.push_back(b_.op("load", {Operand::ofValue(bias), Operand::ofList({tileIndex(nb, C, c)})},
+                                elem, base + "_b"));
+        }
+        std::vector<std::pair<std::string, ValueRef>> carried;
+        for (int64_t r = 0; r < R; ++r) {
+          for (int64_t c = 0; c < C; ++c) carried.push_back({base + "_acc", bvals[c]});
+        }
+        const std::vector<ValueRef> acc = b_.countedLoop(
+            base + "_k", xt->dims[1], carried, [&](ValueRef k, const std::vector<ValueRef>& a) {
+              std::vector<ValueRef> xs, ws, next;
+              for (int64_t r = 0; r < R; ++r) {
+                xs.push_back(b_.op("load", {Operand::ofValue(x), Operand::ofList({tileIndex(ib, R, r), atom(k)})},
+                                   elem, base + "_x"));
+              }
+              for (int64_t c = 0; c < C; ++c) {
+                ws.push_back(outer ? b_.op("load", {Operand::ofValue(wsrc),
+                                                    Operand::ofList({atom(k), tileIndex(nb, C, c)})},
+                                           elem, base + "_w")
+                                   : b_.op("load", {Operand::ofValue(wsrc),
+                                                    Operand::ofList({tileIndex(nb, C, c), atom(k)})},
+                                           elem, base + "_w"));
+              }
+              for (int64_t r = 0; r < R; ++r) {
+                for (int64_t c = 0; c < C; ++c) {
+                  const ValueRef p = b_.op("mul", {Operand::ofValue(xs[r]), Operand::ofValue(ws[c])}, elem,
+                                           base + "_p");
+                  next.push_back(b_.op("add", {Operand::ofValue(a[r * C + c]), Operand::ofValue(p)}, elem,
+                                       base + "_sum"));
+                }
+              }
+              return next;
+            });
+        for (int64_t r = 0; r < R; ++r) {
+          for (int64_t c = 0; c < C; ++c) {
+            b_.effect("store", {Operand::ofValue(acc[r * C + c]), Operand::ofValue(out),
+                                Operand::ofList({tileIndex(ib, R, r), tileIndex(nb, C, c)})});
+          }
+        }
+        return std::vector<ValueRef>{};
+      });
+      return std::vector<ValueRef>{};
+    });
+  }
+
   // out[i, n] = b[n] + sum_k x[i, k] * w[n, k]
   void linear(const Node& n, std::map<ValueRef, Type>& types) {
+    const int64_t R = intAttr(n, "rows", 1), C = intAttr(n, "cols", 1);
+    if (R > 1 || C > 1) return linearTiled(n, types, R, C);
     const ValueRef x = bufferFor(n.operands[0]), w = bufferFor(n.operands[1]),
                    bias = bufferFor(n.operands[2]), out = buffer_.at({n.id, 0});
     const Type xt = types[n.operands[0].value], wt = types[n.operands[1].value];
@@ -188,6 +289,7 @@ class Lowering {
   sema::Sema& sema_;
   Builder b_;
   std::map<ValueRef, ValueRef> buffer_;  // tensor value -> the buffer holding it
+  std::vector<ValueRef> temps_;          // buffers freed at the end
   ValueRef output_{};
 };
 

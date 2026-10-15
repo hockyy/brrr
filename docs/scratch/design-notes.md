@@ -710,6 +710,15 @@ into (backends, frontends) via adapters.
   grant is journaled. 4096 tokens: 34.5 ms -> about 6.3 ms (5.5x), still matching torch
   within 6e-7. `contract` (FMA) and a 512-token specialization measured no consistent
   gain: the loop is load-bound, which is what register blocking (#25) fixes.
+- 2026-10-14: **niching 2: tile-linear** (#25). Tiling is a schedule recorded on the
+  op (`rows`, `cols`, `form`), legal only when the solver answers Yes to "the tile
+  divides the dim"; otherwise the stage is refused and names the question. No
+  remainder loops: for one kernel the agent picks a divisor. `lower-aten` realizes
+  it (R x C carried accumulators; `form=outer` transposes weights once and
+  vectorizes across columns, exact rounding). `allow-reassoc` gained
+  `reassoc=false` so FMA can be granted alone. Best: 4x2 inner + reassoc + contract,
+  3.85 ms at 4096 tokens. Swapping malloc for a buffer-reusing one gives 2.30 ms
+  with the same `.ll`, so per-call allocation is the remaining gap (#28).
 - 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
   go brrr). Agents can read it, the solver backs its claims, and runs are recorded
   and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets
