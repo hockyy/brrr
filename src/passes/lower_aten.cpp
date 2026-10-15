@@ -18,11 +18,17 @@
 //               are transposed once into w_t[k, n], and the C outputs of a row
 //               read C contiguous weights per k, so they vectorize across
 //               columns, every output still summed in order (exact rounding).
+//   epilogues   epilogue="relu,add" (fuse-epilogue): the folded ops run on the
+//               accumulator before the store, which goes to the last op's buffer;
+//               the buffers in between are never allocated
+//   fuse_rows   (fuse-rows) the linear producing this one's input runs inside
+//               this one's row loop, R rows at a time, into an R x N scratch
 //
 // Every loop header states its range as a fact (Builder::countedLoop), so every
 // load and store is proven in bounds. An ATen op without a lowering fails the
 // pass, naming it; the run store then rolls the stage back.
 #include "ir/builder.h"
+#include "passes/linear_chain.h"
 #include "passes/pass.h"
 #include "sema/sema.h"
 
@@ -79,9 +85,63 @@ class Lowering {
     if (ops.empty()) return true;
 
     // Types first, while the tensor ops are still there to ask.
-    std::map<ValueRef, Type> types;
+    std::map<ValueRef, Type>& types = types_;
     for (NodeId id : ops) types[{id, 0}] = sema_.typeOf({id, 0});
     for (NodeId id : args) types[{id, 0}] = sema_.typeOf({id, 0});
+
+    // A tile is only legal if it divides the dims (tile-linear proved it; a
+    // hand-written one is proven here), or rows would be silently skipped.
+    for (NodeId id : ops) {
+      const Node* n = m_.find(id);
+      if (n->kind != "aten.linear" || n->operands.size() != 3) continue;
+      const symbolic::Solver& s = sema_.solverFor(n->scope);
+      const Type xt = types[n->operands[0].value], wt = types[n->operands[1].value];
+      const std::pair<const char*, std::pair<Expr, int64_t>> tiles[] = {
+          {"rows", {xt->dims[0], intAttr(*n, "rows", 1)}}, {"cols", {wt->dims[0], intAttr(*n, "cols", 1)}}};
+      for (const auto& [name, dt] : tiles) {
+        if (dt.second > 1 && s.aligned(dt.first, dt.second) != symbolic::Tri::Yes) {
+          return fail(err, *n, std::string(name) + "=" + std::to_string(dt.second) + " is not proven to divide " +
+                                   sema_.show(dt.first) + " (schedule tiles with tile-linear)");
+        }
+      }
+    }
+
+    // The memory schedule: epilogue chains and fused row loops. Values inside a
+    // chain, and a fused producer's result, never get a buffer.
+    const passes::Dataflow df(m_, func_);
+    std::set<ValueRef> unbuffered;
+    std::map<ValueRef, NodeId> producer;  // a chain's result -> its linear
+    for (NodeId id : ops) {
+      if (m_.find(id)->kind != "aten.linear") continue;
+      passes::Chain c;
+      if (!passes::epilogueChain(m_, df, id, &c, err)) return false;
+      ValueRef v{id, 0};
+      for (NodeId u : c.ops) {
+        unbuffered.insert(v);
+        absorbed_.insert(u);
+        v = {u, 0};
+      }
+      chains_[id] = c.ops;
+      producer[c.final] = id;
+    }
+    for (NodeId id : ops) {
+      const Node* n = m_.find(id);
+      const AttrValue* fr = n->findAttr("fuse_rows");
+      if (n->kind != "aten.linear" || !fr || fr->kind != AttrValue::Kind::Bool || !fr->b) continue;
+      const ValueRef in = n->operands.empty() ? ValueRef{} : n->operands[0].value;
+      const auto it = producer.find(in);
+      size_t operand = 0;
+      if (n->operands[0].kind != Operand::Kind::Value || it == producer.end() || df.soleUser(in, &operand) != id ||
+          operand != 0) {
+        return fail(err, *n, "fuse_rows needs an input that only this op reads, produced by an aten.linear");
+      }
+      if (intAttr(*m_.find(it->second), "rows", 1) != intAttr(*n, "rows", 1)) {
+        return fail(err, *n, "fuse_rows needs the same rows as n" + std::to_string(it->second));
+      }
+      fused_[id] = it->second;
+      deferred_.insert(it->second);
+      unbuffered.insert(in);
+    }
 
     // The signature: tensors become buffers; the result an output buffer.
     for (NodeId id : args) {
@@ -116,6 +176,7 @@ class Lowering {
     std::vector<ValueRef>& temps = temps_;
     for (NodeId id : ops) {
       const ValueRef v{id, 0};
+      if (unbuffered.count(v)) continue;
       if (v == result && output_.id) {
         buffer_[v] = output_;
         continue;
@@ -129,8 +190,9 @@ class Lowering {
     }
 
     for (NodeId id : ops) {
+      if (absorbed_.count(id) || deferred_.count(id)) continue;
       const Node n = *m_.find(id);
-      if (n.kind == "aten.linear") linear(n, types);
+      if (n.kind == "aten.linear") linear(n);
       else if (n.kind == "aten.relu") elementwise(n, types, "relu");
       else if (n.kind == "aten.add") elementwise(n, types, "add");
       else if (n.kind == "aten.mul") elementwise(n, types, "mul");
@@ -155,102 +217,161 @@ class Lowering {
     return o.kind == Operand::Kind::Value ? buffer_.at(o.value) : ValueRef{};
   }
 
-  // A register-blocked linear layer: per tile (ib, nb), R * C accumulators
-  // start at the bias, one k loop updates them all, and they are stored at the end.
-  void linearTiled(const Node& n, std::map<ValueRef, Type>& types, int64_t R, int64_t C) {
-    const ValueRef x = bufferFor(n.operands[0]), w = bufferFor(n.operands[1]),
-                   bias = bufferFor(n.operands[2]), out = buffer_.at({n.id, 0});
-    const Type xt = types[n.operands[0].value], wt = types[n.operands[1].value];
-    const Type elem = Builder::scalar(xt->elem);
-    const std::string base = n.names.empty() || n.names[0].empty() ? "linear" : n.names[0];
+  ValueRef bufferOrNone(ValueRef v) {
+    const auto it = buffer_.find(v);
+    return it == buffer_.end() ? ValueRef{} : it->second;
+  }
+
+  // One linear layer, read once: its buffers, tile, and epilogue.
+  struct Lin {
+    Node n;
+    std::vector<Node> chain;            // epilogue ops, applied before the store
+    ValueRef x, w, bias, wsrc, dest;    // wsrc: what the k loop reads; dest: the chain's result
+    Type xt, wt, elem;
+    std::string base;
+    int64_t R = 1, C = 1;
+    bool outer = false;
+  };
+
+  // Reads the layer, and for form=outer emits the one-time weight transpose.
+  Lin prepare(NodeId id) {
+    Lin L;
+    L.n = *m_.find(id);
+    ValueRef fin{id, 0};
+    for (NodeId u : chains_[id]) {
+      L.chain.push_back(*m_.find(u));
+      fin = {u, 0};
+    }
+    const Node& n = L.n;
+    L.x = bufferOrNone(n.operands[0].value);
+    L.w = bufferFor(n.operands[1]);
+    L.bias = bufferFor(n.operands[2]);
+    L.dest = bufferOrNone(fin);
+    L.xt = types_[n.operands[0].value];
+    L.wt = types_[n.operands[1].value];
+    L.elem = Builder::scalar(L.xt->elem);
+    L.base = n.names.empty() || n.names[0].empty() ? "linear" : n.names[0];
+    L.R = intAttr(n, "rows", 1);
+    L.C = intAttr(n, "cols", 1);
     const AttrValue* form = n.findAttr("form");
-    const bool outer = form && form->kind == AttrValue::Kind::Str && form->s == "outer";
-    ValueRef wsrc = w;  // what the k loop reads: w[n, k], or w_t[k, n] for form=outer
-    if (outer) {
-      const Type wtt = std::make_shared<TypeTerm>(TypeTerm{"buf", true, {wt->dims[1], wt->dims[0]}, wt->elem});
-      wsrc = b_.op("alloc", {}, wtt, base + "_wt");
-      temps_.push_back(wsrc);
-      b_.countedLoop(base + "_tk", wt->dims[1], {}, [&](ValueRef k, const std::vector<ValueRef>&) {
-        b_.countedLoop(base + "_tn", wt->dims[0], {}, [&](ValueRef j, const std::vector<ValueRef>&) {
-          const ValueRef v = b_.op("load", {Operand::ofValue(w), at({j, k})}, elem, base + "_wv");
-          b_.effect("store", {Operand::ofValue(v), Operand::ofValue(wsrc), at({k, j})});
+    L.outer = form && form->kind == AttrValue::Kind::Str && form->s == "outer";
+    L.wsrc = L.w;
+    if (L.outer) {
+      const Type wtt =
+          std::make_shared<TypeTerm>(TypeTerm{"buf", true, {L.wt->dims[1], L.wt->dims[0]}, L.wt->elem});
+      L.wsrc = b_.op("alloc", {}, wtt, L.base + "_wt");
+      temps_.push_back(L.wsrc);
+      b_.countedLoop(L.base + "_tk", L.wt->dims[1], {}, [&](ValueRef k, const std::vector<ValueRef>&) {
+        b_.countedLoop(L.base + "_tn", L.wt->dims[0], {}, [&](ValueRef j, const std::vector<ValueRef>&) {
+          const ValueRef v = b_.op("load", {Operand::ofValue(L.w), at({j, k})}, L.elem, L.base + "_wv");
+          b_.effect("store", {Operand::ofValue(v), Operand::ofValue(L.wsrc), at({k, j})});
           return std::vector<ValueRef>{};
         });
         return std::vector<ValueRef>{};
       });
     }
-    b_.countedLoop(base + "_ib", tiles(xt->dims[0], R), {}, [&](ValueRef ib, const std::vector<ValueRef>&) {
-      b_.countedLoop(base + "_nb", tiles(wt->dims[0], C), {}, [&](ValueRef nb, const std::vector<ValueRef>&) {
-        std::vector<ValueRef> bvals;
-        for (int64_t c = 0; c < C; ++c) {
-          bvals.push_back(b_.op("load", {Operand::ofValue(bias), Operand::ofList({tileIndex(nb, C, c)})},
-                                elem, base + "_b"));
-        }
-        std::vector<std::pair<std::string, ValueRef>> carried;
-        for (int64_t r = 0; r < R; ++r) {
-          for (int64_t c = 0; c < C; ++c) carried.push_back({base + "_acc", bvals[c]});
-        }
-        const std::vector<ValueRef> acc = b_.countedLoop(
-            base + "_k", xt->dims[1], carried, [&](ValueRef k, const std::vector<ValueRef>& a) {
-              std::vector<ValueRef> xs, ws, next;
-              for (int64_t r = 0; r < R; ++r) {
-                xs.push_back(b_.op("load", {Operand::ofValue(x), Operand::ofList({tileIndex(ib, R, r), atom(k)})},
-                                   elem, base + "_x"));
-              }
+    return L;
+  }
+
+  // The folded ops, on one output value at [row, col].
+  ValueRef epilogue(const Lin& L, ValueRef v, const Expr& row, const Expr& col) {
+    ValueRef cur{L.n.id, 0};
+    for (const Node& u : L.chain) {
+      const std::string base = u.names.empty() || u.names[0].empty() ? "ep" : u.names[0];
+      if (u.kind == "aten.relu") {
+        v = b_.op("relu", {Operand::ofValue(v)}, L.elem, base + "_v");
+      } else {
+        const size_t side = u.operands[0].kind == Operand::Kind::Value && u.operands[0].value == cur ? 0 : 1;
+        const ValueRef y = b_.op(
+            "load", {Operand::ofValue(bufferFor(u.operands[1 - side])), Operand::ofList({row, col})}, L.elem,
+            base + "_in");
+        std::vector<Operand> in = {Operand::ofValue(v), Operand::ofValue(y)};
+        if (side == 1) std::swap(in[0], in[1]);
+        v = b_.op(u.kind.substr(5), std::move(in), L.elem, base + "_v");
+      }
+      cur = {u.id, 0};
+    }
+    return v;
+  }
+
+  // Rows R * ib .. R * ib + R - 1 of a layer, register-blocked: per column tile
+  // nb, R * C accumulators start at the bias, one k loop updates them all, then
+  // the epilogue runs and they are stored. xrow / drow give tile row r's index
+  // into L.x / L.dest: the global row, or r itself for a fused row scratch.
+  void rowBlock(const Lin& L, ValueRef ib, const std::function<Expr(int64_t)>& xrow,
+                const std::function<Expr(int64_t)>& drow) {
+    const int64_t R = L.R, C = L.C;
+    b_.countedLoop(L.base + (C > 1 ? "_nb" : "_n"), tiles(L.wt->dims[0], C), {},
+                   [&](ValueRef nb, const std::vector<ValueRef>&) {
+      std::vector<ValueRef> bvals;
+      for (int64_t c = 0; c < C; ++c) {
+        bvals.push_back(b_.op("load", {Operand::ofValue(L.bias), Operand::ofList({tileIndex(nb, C, c)})},
+                              L.elem, L.base + "_b"));
+      }
+      std::vector<std::pair<std::string, ValueRef>> carried;
+      for (int64_t r = 0; r < R; ++r) {
+        for (int64_t c = 0; c < C; ++c) carried.push_back({L.base + "_acc", bvals[c]});
+      }
+      const std::vector<ValueRef> acc = b_.countedLoop(
+          L.base + "_k", L.xt->dims[1], carried, [&](ValueRef k, const std::vector<ValueRef>& a) {
+            std::vector<ValueRef> xs, ws, next;
+            for (int64_t r = 0; r < R; ++r) {
+              xs.push_back(b_.op("load", {Operand::ofValue(L.x), Operand::ofList({xrow(r), atom(k)})}, L.elem,
+                                 L.base + "_x"));
+            }
+            for (int64_t c = 0; c < C; ++c) {
+              const Expr j = tileIndex(nb, C, c);
+              ws.push_back(b_.op("load",
+                                 {Operand::ofValue(L.wsrc),
+                                  L.outer ? Operand::ofList({atom(k), j}) : Operand::ofList({j, atom(k)})},
+                                 L.elem, L.base + "_w"));
+            }
+            for (int64_t r = 0; r < R; ++r) {
               for (int64_t c = 0; c < C; ++c) {
-                ws.push_back(outer ? b_.op("load", {Operand::ofValue(wsrc),
-                                                    Operand::ofList({atom(k), tileIndex(nb, C, c)})},
-                                           elem, base + "_w")
-                                   : b_.op("load", {Operand::ofValue(wsrc),
-                                                    Operand::ofList({tileIndex(nb, C, c), atom(k)})},
-                                           elem, base + "_w"));
+                const ValueRef p =
+                    b_.op("mul", {Operand::ofValue(xs[r]), Operand::ofValue(ws[c])}, L.elem, L.base + "_p");
+                next.push_back(b_.op("add", {Operand::ofValue(a[r * C + c]), Operand::ofValue(p)}, L.elem,
+                                     L.base + "_sum"));
               }
-              for (int64_t r = 0; r < R; ++r) {
-                for (int64_t c = 0; c < C; ++c) {
-                  const ValueRef p = b_.op("mul", {Operand::ofValue(xs[r]), Operand::ofValue(ws[c])}, elem,
-                                           base + "_p");
-                  next.push_back(b_.op("add", {Operand::ofValue(a[r * C + c]), Operand::ofValue(p)}, elem,
-                                       base + "_sum"));
-                }
-              }
-              return next;
-            });
-        for (int64_t r = 0; r < R; ++r) {
-          for (int64_t c = 0; c < C; ++c) {
-            b_.effect("store", {Operand::ofValue(acc[r * C + c]), Operand::ofValue(out),
-                                Operand::ofList({tileIndex(ib, R, r), tileIndex(nb, C, c)})});
-          }
+            }
+            return next;
+          });
+      for (int64_t r = 0; r < R; ++r) {
+        for (int64_t c = 0; c < C; ++c) {
+          const Expr j = tileIndex(nb, C, c);
+          const ValueRef v = epilogue(L, acc[r * C + c], tileIndex(ib, R, r), j);
+          b_.effect("store", {Operand::ofValue(v), Operand::ofValue(L.dest), Operand::ofList({drow(r), j})});
         }
-        return std::vector<ValueRef>{};
-      });
+      }
       return std::vector<ValueRef>{};
     });
   }
 
-  // out[i, n] = b[n] + sum_k x[i, k] * w[n, k]
-  void linear(const Node& n, std::map<ValueRef, Type>& types) {
-    const int64_t R = intAttr(n, "rows", 1), C = intAttr(n, "cols", 1);
-    if (R > 1 || C > 1) return linearTiled(n, types, R, C);
-    const ValueRef x = bufferFor(n.operands[0]), w = bufferFor(n.operands[1]),
-                   bias = bufferFor(n.operands[2]), out = buffer_.at({n.id, 0});
-    const Type xt = types[n.operands[0].value], wt = types[n.operands[1].value];
-    const Type elem = Builder::scalar(xt->elem);
-    const std::string base = n.names.empty() || n.names[0].empty() ? "linear" : n.names[0];
-    b_.countedLoop(base + "_i", xt->dims[0], {}, [&](ValueRef i, const std::vector<ValueRef>&) {
-      b_.countedLoop(base + "_n", wt->dims[0], {}, [&](ValueRef j, const std::vector<ValueRef>&) {
-        const ValueRef b0 = b_.op("load", {Operand::ofValue(bias), at({j})}, elem, base + "_b");
-        const std::vector<ValueRef> acc = b_.countedLoop(
-            base + "_k", xt->dims[1], {{base + "_acc", b0}},
-            [&](ValueRef k, const std::vector<ValueRef>& carried) {
-              const ValueRef xv = b_.op("load", {Operand::ofValue(x), at({i, k})}, elem, base + "_x");
-              const ValueRef wv = b_.op("load", {Operand::ofValue(w), at({j, k})}, elem, base + "_w");
-              const ValueRef p = b_.op("mul", {Operand::ofValue(xv), Operand::ofValue(wv)}, elem, base + "_p");
-              return std::vector<ValueRef>{
-                  b_.op("add", {Operand::ofValue(carried[0]), Operand::ofValue(p)}, elem, base + "_sum")};
-            });
-        b_.effect("store", {Operand::ofValue(acc[0]), Operand::ofValue(out), at({i, j})});
-        return std::vector<ValueRef>{};
-      });
+  // out[i, n] = epilogue(b[n] + sum_k x[i, k] * w[n, k]), tiled R x C (1 x 1
+  // unless tile-linear scheduled it). With fuse_rows, the producer of x runs
+  // first in each row block, into an R x N scratch that this layer then reads.
+  void linear(const Node& n) {
+    const auto f = fused_.find(n.id);
+    Lin P;
+    if (f != fused_.end()) P = prepare(f->second);
+    Lin L = prepare(n.id);
+    if (f != fused_.end()) {
+      const Type st = std::make_shared<TypeTerm>(
+          TypeTerm{"buf", true, {ExprTerm::constant(P.R), P.wt->dims[0]}, P.wt->elem});
+      P.dest = b_.op("alloc", {}, st, P.base + "_rows");
+      temps_.push_back(P.dest);
+      L.x = P.dest;
+    }
+    b_.countedLoop(L.base + (L.R > 1 ? "_ib" : "_i"), tiles(L.xt->dims[0], L.R), {},
+                   [&](ValueRef ib, const std::vector<ValueRef>&) {
+      const auto global = [&](int64_t r) { return tileIndex(ib, L.R, r); };
+      const auto local = [](int64_t r) { return ExprTerm::constant(r); };
+      if (f != fused_.end()) {
+        rowBlock(P, ib, global, local);
+        rowBlock(L, ib, local, global);
+      } else {
+        rowBlock(L, ib, global, global);
+      }
       return std::vector<ValueRef>{};
     });
   }
@@ -289,7 +410,11 @@ class Lowering {
   sema::Sema& sema_;
   Builder b_;
   std::map<ValueRef, ValueRef> buffer_;  // tensor value -> the buffer holding it
+  std::map<ValueRef, Type> types_;       // tensor value -> its tensor type
   std::vector<ValueRef> temps_;          // buffers freed at the end
+  std::map<NodeId, std::vector<NodeId>> chains_;  // linear -> its epilogue ops
+  std::map<NodeId, NodeId> fused_;       // linear -> the linear computed inside its row loop
+  std::set<NodeId> absorbed_, deferred_; // lowered as part of another op
   ValueRef output_{};
 };
 

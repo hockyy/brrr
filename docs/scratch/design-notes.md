@@ -719,6 +719,15 @@ into (backends, frontends) via adapters.
   `reassoc=false` so FMA can be granted alone. Best: 4x2 inner + reassoc + contract,
   3.85 ms at 4096 tokens. Swapping malloc for a buffer-reusing one gives 2.30 ms
   with the same `.ll`, so per-call allocation is the remaining gap (#28).
+- 2026-10-14: **niching 4: memory** (#28). `fuse-epilogue` (relu / add / mul folded
+  into a linear's store when each is the sole reader and an add's other operand
+  already exists) and `fuse-rows` (a producer linear runs R rows at a time in its
+  consumer's row loop, into an R x N scratch). Both are attributes that `lower-aten`
+  re-checks with the same code the passes used (`linear_chain.h`). It also re-proves
+  any `rows`/`cols`, so a hand-written tile can't skip rows. The FFN went from 9 MB
+  to one 4 KB allocation per call: 3.85 -> 2.07 ms at 4096 tokens. That beats torch
+  on one thread at every size (0.016 vs 0.028 ms at 32 tokens). The planned workspace
+  ABI wasn't needed.
 - 2026-10-14: **the name is Brrr** ("Bot-Readable, Reasoned, Reproducible"; compiler
   go brrr). Agents can read it, the solver backs its claims, and runs are recorded
   and replayable. Files are `.br`. The C++ namespace, the binary, the CMake targets

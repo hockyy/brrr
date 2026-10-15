@@ -175,19 +175,26 @@ $ brrr show r1 > special.br && brrr to-llvm special.br > special.ll
 $ clang -O3 -march=native special.ll examples/harness.c -o special
 $ python examples/build.py               # kernel.br -> lower-aten -> to-llvm -> clang -> compare with torch
 $ python examples/build.py --passes "lower-aten,allow-reassoc"   # the same, with one niching step
-$ python examples/build.py --passes "tile-linear rows=4 cols=2,lower-aten,allow-reassoc contract=true"
+$ python examples/build.py --passes "tile-linear rows=4 cols=2,fuse-epilogue,fuse-rows,lower-aten,allow-reassoc contract=true"
 ```
 
 ## From PyTorch to a binary: where it stands
 
 `python examples/build.py --passes "<pipeline>"` on this machine (Arrow Lake,
-AVX2 + FMA). Every row matches torch's output within 6e-7:
+AVX2 + FMA). Brrr's binary runs on one thread, and every column matches torch's
+output within 6e-7:
 
-| tokens | `lower-aten` (naive loops) | `+allow-reassoc` | `tile-linear rows=4 cols=2,` ... `contract=true` | torch (all threads) | torch (1 thread) |
-|---|---|---|---|---|---|
-| 32 | 0.28 ms | 0.052 ms | **0.038 ms** | 0.078 ms | 0.028 ms |
-| 512 | 4.2 ms | 0.85 ms | **0.52 ms** | 0.090 ms | 0.27 ms |
-| 4096 | 34.2 ms | 6.5 ms | **3.85 ms** | 0.30 ms | 2.3 ms |
+| tokens | `lower-aten` (naive loops) | + `allow-reassoc` | + `tile-linear` | + `fuse-epilogue,fuse-rows` | torch (1 thread) | torch (all threads) |
+|---|---|---|---|---|---|---|
+| 32 | 0.28 ms | 0.052 ms | 0.038 ms | **0.016 ms** | 0.028 ms | 0.027 ms |
+| 512 | 4.2 ms | 0.85 ms | 0.52 ms | **0.26 ms** | 0.27 ms | 0.08 ms |
+| 4096 | 34.2 ms | 6.5 ms | 3.85 ms | **2.07 ms** | 2.28 ms | 0.26 ms |
+
+**On one thread, the binary beats torch at every size:** 1.7× faster at 32
+tokens, level at 512, and 10% faster at 4096. At 32 tokens it also beats torch
+with all threads. The full pipeline is
+`tile-linear rows=4 cols=2,fuse-epilogue,fuse-rows,lower-aten,allow-reassoc contract=true`.
+Each column adds one recorded stage:
 
 **The first niching step was one recorded permission: `allow-reassoc`.** Float
 addition isn't associative, because `(a + b) + c` and `a + (b + c)` can round
@@ -213,20 +220,28 @@ fact or divisor to try. `form=outer` transposes the weights once and vectorizes
 across columns instead; every output is then summed in order (no `reassoc`), and
 it is close behind (3.9 ms at 4096 tokens).
 
-**What's left is memory, not arithmetic.** At 4096 tokens the kernel allocates
-9 MB of intermediates on every call, and the OS hands back fresh pages each
-time. With the very same binary and an allocator that reuses buffers between
-calls, it runs 0.026 / 0.27 / 2.30 ms: level with torch on one thread. The
-inner loop is already a textbook 4x16 FMA micro-kernel. Next, each step a run an
-agent can branch and measure:
+**The third was memory** ([#28](https://github.com/hockyy/brrr/issues/28)). The
+kernel allocated 9 MB of intermediates on every call, and the OS handed back
+fresh pages each time. Two more schedules removed all of it but 4 KB:
 
-- **No per-call heap traffic** ([#28](https://github.com/hockyy/brrr/issues/28)):
-  fuse relu and the residual add into the linear epilogues, run the two layers
-  row block by row block so the 256-wide hidden activations never leave L1, and
-  give the caller a workspace instead of `malloc`.
+- `fuse-epilogue` folds the relu into fc1's store and the residual add into
+  fc2's store. Each folded op must be the only reader of the value before it,
+  and an add's other operand must already exist.
+- `fuse-rows` runs fc1 four rows at a time inside fc2's row loop, into a 4 x 256
+  scratch that stays in L1. Both layers must use the same row tile, which
+  tile-linear already proved divides `8 * %t`.
+
+`lower-aten` re-checks both (and the tile) when it realizes them, so a stale or
+hand-written schedule fails the stage instead of miscompiling.
+
+Next, each step a run an agent can branch and measure:
+
+- **Threads**, to meet torch's all-thread numbers at 512+ tokens: the row
+  blocks are independent.
 - **Facts as LLVM hints** ([#26](https://github.com/hockyy/brrr/issues/26)): what
   Brrr proved becomes `noalias`, `llvm.assume` and `align`.
-- **Threads**, to meet torch's all-thread numbers at 512+ tokens.
+- **Packed weights:** `form=outer` re-transposes the weights on every call,
+  since they are arguments. A pack-once entry point would remove that.
 
 ## Running a pipeline: the reference
 
@@ -290,11 +305,11 @@ Prototype. What works and is tested (four `ctest` suites, ~200 CLI checks):
   (`brrr to-llvm` + clang), checked against torch ([codegen notes](docs/scratch/codegen.md));
 - passes, one self-registering C++ file each: `infer-shapes`, `fold-constants`,
   `fold-reshape`, `insert-guards`, `reconcile-casts`, `dce`, `canonicalize`,
-  `lower-aten`, `allow-reassoc`, `tile-linear`;
+  `lower-aten`, `allow-reassoc`, `tile-linear`, `fuse-epilogue`, `fuse-rows`;
 - the run store: `run`, `resume`, `branch`, `show`, `runs`, with hand edits as
   recorded stages and rollback of any stage that fails verification.
 
-Not yet: most niching (so far `allow-reassoc` and `tile-linear`, see above), a
+Not yet: threads, and most niching beyond the four steps above, a
 rewrite-pattern engine, call ops and preconditions at call sites, `min`/`max`
 in expressions, and vector types. The roadmap is
 [hockyy/brrr#1](https://github.com/hockyy/brrr/issues/1).
